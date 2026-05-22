@@ -1,0 +1,49 @@
+# GuavaScan RAG Pipeline — Configuration
+# All tuneable parameters live here. No magic numbers in Python code.
+
+# ── Embedding model ────────────────────────────────────────────────────────────
+embedding_model: "sentence-transformers/all-MiniLM-L6-v2"
+
+# ── LLM ───────────────────────────────────────────────────────────────────────
+llm_model: "gemini-1.5-flash"
+
+# ── ChromaDB ──────────────────────────────────────────────────────────────────
+chroma_persist_dir: "./chroma_db"
+collection_name: "guava_diseases"
+
+# ── Knowledge base ────────────────────────────────────────────────────────────
+knowledge_base_dir: "./rag/knowledge_base"
+
+# ── Chunking ──────────────────────────────────────────────────────────────────
+chunk_size: 400
+chunk_overlap: 60
+
+# ── Retrieval ─────────────────────────────────────────────────────────────────
+retriever:
+  dense_top_k: 5
+  bm25_top_k: 5
+  final_top_k: 5
+  use_reranker: false
+  reranker_model: "cross-encoder/ms-marco-MiniLM-L-6-v2"
+
+# ── Confidence gating (maps model confidence → RAG behaviour) ─────────────────
+confidence_gate:
+  rag_threshold: 0.60       # >= this → full RAG on predicted class
+  fallback_threshold: 0.40  # >= this < rag_threshold → RAG on general agronomy
+
+# ── Class-to-KB query mapping ─────────────────────────────────────────────────
+# Maps model output class names to knowledge-base search queries.
+# Edit here when classes change — never edit Python files for this.
+class_query_map:
+  Guava_anthracnose: "guava canker anthracnose disease symptoms treatment management"
+  Guava_healthy:     "guava healthy leaf monitoring prevention care"
+  Guava_insect_bite: "guava insect bite pest damage thrips mealybug treatment"
+  Guava_multiple:    "guava multiple diseases co-infection treatment management"
+  Guava_scorch:      "guava leaf scorch symptoms treatment potassium deficiency"
+  Guava_yld:         "guava yellow leaf disease mummification treatment"
+
+# ── Healthy class identifier (used to select HEALTHY_PROMPT) ─────────────────
+healthy_class: "Guava_healthy"
+
+# ── Fallback query (used when 0.40 <= confidence < 0.60) ─────────────────────
+fallback_query: "guava orchard management disease prevention general care"

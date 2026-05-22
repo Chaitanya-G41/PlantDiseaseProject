@@ -1,13 +1,28 @@
+# GuavaScan — Python Dependencies
+# RAG Pipeline + ViT Dashboard
+
+# ── Core Streamlit & ML ────────────────────────────────────────────────────────
+streamlit
 torch
 torchvision
 timm
-transformers
-faiss-cpu
-sentence-transformers
-streamlit
 Pillow
-scikit-learn
 matplotlib
 numpy
+
+# ── RAG Stack ─────────────────────────────────────────────────────────────────
+langchain
+langchain-community
+langchain-google-genai
+chromadb
+sentence-transformers
+rank_bm25
+
+# ── Evaluation ────────────────────────────────────────────────────────────────
+ragas
 pandas
-opencv-python
+datasets
+
+# ── Utilities ─────────────────────────────────────────────────────────────────
+python-dotenv
+pyyaml

@@ -36,37 +36,14 @@ if ROOT not in sys.path:
 from src.model import get_attention_maps
 from src.preprocess import get_transforms, get_inverse_transform
 
+# ── Model loader (shared with app4.py) ────────────────────────────────────────
+from app.model_utils import load_model, GUAVA_CLASSES, DISPLAY_NAMES, SEVERITY
+
 # ── Model weight paths ─────────────────────────────────────────────────────────
 STAGE1_PTH = os.path.join(ROOT, "models", "stage1", "stage1_best.pth")
 STAGE2_PTH = os.path.join(ROOT, "models", "stage2", "stage2_best.pth")
 
-# ── Class definitions ──────────────────────────────────────────────────────────
-GUAVA_CLASSES = [
-    "Guava_anthracnose",
-    "Guava_healthy",
-    "Guava_insect_bite",
-    "Guava_multiple",
-    "Guava_scorch",
-    "Guava_yld",
-]
-
-DISPLAY_NAMES = {
-    "Guava_anthracnose": "Anthracnose",
-    "Guava_healthy":     "Healthy",
-    "Guava_insect_bite": "Insect Bite",
-    "Guava_multiple":    "Multiple Diseases",
-    "Guava_scorch":      "Leaf Scorch",
-    "Guava_yld":         "Yellow Leaf Disease",
-}
-
-SEVERITY = {
-    "Guava_anthracnose": ("High",   "#dc2626"),
-    "Guava_healthy":     ("None",   "#16a34a"),
-    "Guava_insect_bite": ("Medium", "#d97706"),
-    "Guava_multiple":    ("High",   "#dc2626"),
-    "Guava_scorch":      ("Medium", "#d97706"),
-    "Guava_yld":         ("High",   "#dc2626"),
-}
+# ── Class definitions are imported from model_utils.py ───────────────────────
 
 # ── Treatment advice ───────────────────────────────────────────────────────────
 DISEASE_ADVICE = {
@@ -243,19 +220,7 @@ DISEASE_ADVICE = {
 #     model.to(device)
 #     model.eval()
 #     return model, device
-@st.cache_resource(show_spinner=False)
-def load_model():
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    import timm
-    model = timm.create_model('deit_tiny_patch16_224',
-                               pretrained=False, num_classes=6)
-
-    ckpt = torch.load(STAGE2_PTH, map_location=device)
-    model.load_state_dict(ckpt['model_state_dict'], strict=True)
-    model.to(device).eval()
-
-    print(f"Model loaded | val_acc: {ckpt['val_acc']:.2f}%")
-    return model, device
+# load_model() is imported from app.model_utils — see import above
 
 
 # ══════════════════════════════════════════════════════════════════════════════
