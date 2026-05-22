@@ -122,6 +122,7 @@ class GuavaRetriever:
     def retrieve(self, query: str) -> list[dict]:
         """
         Run hybrid retrieval for a query string.
+        If bm25_top_k == 0, dense-only retrieval is used (ablation mode).
 
         Returns:
             list of dicts: [{"content": str, "source": str, "section": str, "score": float}]
@@ -129,25 +130,31 @@ class GuavaRetriever:
         # 1. Dense retrieval
         dense_docs = self.vectorstore.similarity_search(query, k=self.dense_top_k)
 
-        # 2. Sparse retrieval
-        sparse_docs = self._bm25_search(query, self.bm25_top_k)
+        # 2. Sparse retrieval (skip when bm25_top_k == 0 → dense-only ablation)
+        if self.bm25_top_k > 0:
+            sparse_docs = self._bm25_search(query, self.bm25_top_k)
+            merged = _rrf_merge(dense_docs, sparse_docs)
+        else:
+            # Dense-only: wrap with dummy score for uniform output format
+            merged = [(doc, 1.0 / (60 + i + 1)) for i, doc in enumerate(dense_docs)]
 
-        # 3. RRF merge
-        merged = _rrf_merge(dense_docs, sparse_docs)
-
-        # 4. Take final_top_k
+        # 3. Take final_top_k
         top_merged = merged[: self.final_top_k]
 
-        # 5. Optional reranking
+        # 4. Optional reranking
         if self.use_reranker and self.reranker is not None:
-            pairs  = [(query, doc.page_content) for doc, _ in top_merged]
+            pairs     = [(query, doc.page_content) for doc, _ in top_merged]
             ce_scores = self.reranker.predict(pairs)
-            ranked = sorted(zip(top_merged, ce_scores), key=lambda x: x[1], reverse=True)
-            top_merged = [(item[0], item[1]) for item, _ in ranked]
-
-        # 6. Format output
+            ranked    = sorted(zip(top_merged, ce_scores), key=lambda x: x[1], reverse=True)
+            top_merged = [item[0] for item, _ in ranked]
+        
+        # 5. Format output
         results = []
-        for doc, score in top_merged:
+        for item in top_merged:
+            if isinstance(item, tuple):
+                doc, score = item
+            else:
+                doc, score = item, 0.0
             results.append({
                 "content": doc.page_content,
                 "source":  doc.metadata.get("source", "unknown"),

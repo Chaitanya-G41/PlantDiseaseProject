@@ -22,3 +22,8 @@ Thumbs.db
 
 # Optional (recommended)
 *.ipynb
+
+# RAG runtime artifacts
+chroma_db/
+evaluation/results.csv
+*.log
