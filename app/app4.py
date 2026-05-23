@@ -28,7 +28,7 @@ if ROOT not in sys.path:
 
 from src.model import get_attention_maps
 from src.preprocess import get_transforms, get_inverse_transform
-from app.model_utils import load_model, GUAVA_CLASSES, DISPLAY_NAMES, SEVERITY
+from model_utils import load_model, GUAVA_CLASSES, DISPLAY_NAMES, SEVERITY
 
 # ══════════════════════════════════════════════════════════════════════════════
 # CONFIG

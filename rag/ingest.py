@@ -28,7 +28,7 @@ if ROOT not in sys.path:
 
 import yaml
 from langchain_community.document_loaders import UnstructuredMarkdownLoader
-from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_community.vectorstores import Chroma
 
@@ -141,17 +141,17 @@ def ingest(config_path: str = None, force: bool = False):
         encode_kwargs={"normalize_embeddings": True},
     )
 
-    # Clear existing collection if re-indexing
+    # Clear existing ChromaDB if re-indexing
     if os.path.exists(chroma_dir):
         import shutil
-        # Remove only the chroma data, not the hash file
-        for item in os.listdir(chroma_dir):
-            if item != ".index_hash":
-                item_path = os.path.join(chroma_dir, item)
-                if os.path.isdir(item_path):
-                    shutil.rmtree(item_path)
-                else:
-                    os.remove(item_path)
+        try:
+            shutil.rmtree(chroma_dir)
+        except PermissionError:
+            # Windows may lock SQLite files — try individual removal
+            import time
+            time.sleep(1)
+            shutil.rmtree(chroma_dir, ignore_errors=True)
+        os.makedirs(chroma_dir, exist_ok=True)
 
     vectorstore = Chroma.from_documents(
         documents=chunks,
@@ -159,11 +159,11 @@ def ingest(config_path: str = None, force: bool = False):
         persist_directory=chroma_dir,
         collection_name=collection,
     )
-    vectorstore.persist()
+    # Chroma 0.4+ auto-persists — no manual persist() call needed
 
     # ── Store hash ────────────────────────────────────────────────────────────
     store_hash(chroma_dir, current_hash)
-    print(f"[ingest] ✅ Indexed {len(chunks)} chunks into ChromaDB at: {chroma_dir}")
+    print(f"[ingest] DONE. Indexed {len(chunks)} chunks into ChromaDB at: {chroma_dir}")
     return len(chunks)
 
 

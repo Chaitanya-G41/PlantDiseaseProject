@@ -37,7 +37,7 @@ from src.model import get_attention_maps
 from src.preprocess import get_transforms, get_inverse_transform
 
 # ── Model loader (shared with app4.py) ────────────────────────────────────────
-from app.model_utils import load_model, GUAVA_CLASSES, DISPLAY_NAMES, SEVERITY
+from model_utils import load_model, GUAVA_CLASSES, DISPLAY_NAMES, SEVERITY
 
 # ── Model weight paths ─────────────────────────────────────────────────────────
 STAGE1_PTH = os.path.join(ROOT, "models", "stage1", "stage1_best.pth")

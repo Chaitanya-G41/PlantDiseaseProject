@@ -24,6 +24,7 @@ if ROOT not in sys.path:
 
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_community.vectorstores import Chroma
+from langchain_core.documents import Document
 
 
 # ── Reciprocal Rank Fusion ─────────────────────────────────────────────────────
@@ -106,8 +107,6 @@ class GuavaRetriever:
 
     def _bm25_search(self, query: str, top_k: int):
         """Run BM25 search and return LangChain-compatible Document objects."""
-        from langchain.schema import Document
-
         tokens = query.lower().split()
         scores = self.bm25.get_scores(tokens)
         top_idx = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)[:top_k]

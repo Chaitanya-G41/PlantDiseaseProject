@@ -8,7 +8,7 @@ Two templates only:
   HEALTHY_PROMPT  — for healthy leaf (no treatment section)
 """
 
-from langchain.prompts import PromptTemplate
+from langchain_core.prompts import PromptTemplate
 
 # ── Disease advisory prompt ────────────────────────────────────────────────────
 DISEASE_PROMPT = PromptTemplate(
