@@ -9,6 +9,7 @@ models/*.bin
 # Python
 __pycache__/
 *.pyc
+.env.example
 .env
 venv/
 *.egg-info/
