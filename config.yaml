@@ -5,7 +5,8 @@
 embedding_model: "sentence-transformers/all-MiniLM-L6-v2"
 
 # ── LLM ───────────────────────────────────────────────────────────────────────
-llm_model: "gemini-1.5-flash"
+# llm_model: "gemini-1.5-flash"
+llm_model: "gemini-2.5-flash"
 
 # ── ChromaDB ──────────────────────────────────────────────────────────────────
 chroma_persist_dir: "./chroma_db"

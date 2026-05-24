@@ -24,6 +24,15 @@ from dotenv import load_dotenv
 
 load_dotenv(os.path.join(ROOT, ".env"))
 
+
+
+print("=== ENV DEBUG ===")
+print(f"ROOT path: {ROOT}")
+print(f"ENV file exists: {os.path.exists(os.path.join(ROOT, '.env'))}")
+key = os.getenv("GEMINI_API_KEY", "NOT FOUND")
+print(f"Key loaded: {key[:10]}..." if key != "NOT FOUND" else "Key: NOT FOUND")
+print("=================")
+
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.output_parsers import StrOutputParser
 
@@ -88,6 +97,7 @@ def run_rag_chain(
         }
     """
     api_key = os.getenv("GEMINI_API_KEY")
+    print(f">>> KEY IS: '{api_key}'")
     if not api_key:
         raise EnvironmentError(
             "GEMINI_API_KEY not set. Copy .env.example to .env and add your key."
