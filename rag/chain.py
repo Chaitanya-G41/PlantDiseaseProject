@@ -119,7 +119,7 @@ def run_rag_chain(
         model=cfg["llm_model"],
         google_api_key=api_key,
         temperature=0.2,
-        max_output_tokens=1024,
+        max_output_tokens=2048,
     )
 
     # ── LCEL chain ────────────────────────────────────────────────────────────
