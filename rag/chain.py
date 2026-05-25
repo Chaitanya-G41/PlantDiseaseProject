@@ -125,18 +125,20 @@ def run_rag_chain(
     # ── LCEL chain ────────────────────────────────────────────────────────────
     parser = StrOutputParser()
 
+   # In chain.py — replace the prompt_value construction block with this:
+
     if is_healthy:
         prompt_value = HEALTHY_PROMPT.format(
-            confidence=confidence * 100,
+            confidence=f"{confidence * 100:.1f}",
             context=context,
-        )
+    )
     else:
         display_name = predicted_class.replace("Guava_", "").replace("_", " ").title()
         prompt_value = DISEASE_PROMPT.format(
             disease_name=display_name,
-            confidence=confidence * 100,
+            confidence=f"{confidence * 100:.1f}",
             context=context,
-        )
+    )
 
     # Run chain
     from langchain_core.messages import HumanMessage

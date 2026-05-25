@@ -4,99 +4,92 @@ rag/prompts.py
 Prompt templates for GuavaScan RAG pipeline.
 
 Two templates only:
-  DISEASE_PROMPT  — for all disease classes
+  DISEASE_PROMPT  — for all 6 disease classes
   HEALTHY_PROMPT  — for healthy leaf (no treatment section)
+
+Sections use ## headings — matches the _parse_rag_answer() splitter in app4.py.
+Confidence passed as pre-formatted string to avoid PromptTemplate f-string conflicts.
 """
 
-from langchain_core.prompts import PromptTemplate
+# Plain strings — chain.py calls .format(disease_name=..., confidence=..., context=...)
+# Do NOT use PromptTemplate here; the {confidence:.1f} specifier breaks LangChain's
+# PromptTemplate variable substitution engine.
 
-# ── Disease advisory prompt ────────────────────────────────────────────────────
-DISEASE_PROMPT = PromptTemplate(
-    input_variables=["disease_name", "confidence", "context"],
-    template="""You are an expert plant pathologist and agronomist specializing in guava (Psidium guajava) diseases.
+DISEASE_PROMPT = """\
+You are an expert plant pathologist and agronomist specialising in guava (Psidium guajava) diseases.
 
 A Vision Transformer (ViT) deep learning model has detected the following condition in a guava leaf image:
 - Detected Condition: {disease_name}
-- Model Confidence: {confidence:.1f}%
+- Model Confidence: {confidence}%
 
 Use ONLY the information provided in the CONTEXT below to generate your advisory report.
-Do not recommend treatments not present in the provided context.
+Do not recommend any treatment not explicitly present in the provided context.
 If information is insufficient for any section, write: "Insufficient data — consult a certified agronomist."
-Do not use any knowledge outside the provided context.
 
 CONTEXT:
 {context}
 
 ---
 
-Generate a structured agronomic advisory report with EXACTLY these sections in order:
+Respond with EXACTLY the following 6 sections using ## headings. Do not rename, skip, or reorder sections.
+Use - bullet points inside each section. Do not write long paragraphs.
 
-**1. Diagnosis Summary**
-Briefly describe what this condition is, its causal agent, and why it is significant.
+## Diagnosis Summary
+2–3 sentences: what this condition is, its causal agent, and why it matters for the crop.
 
-**2. Symptoms to Confirm**
-List the key visual symptoms the farmer should verify on the plant to confirm this diagnosis.
+## Symptoms to Confirm
+- Bullet list of 4–6 visual symptoms the farmer should verify on the plant.
 
-**3. Immediate Actions**
-List the urgent steps to take within the next 24–72 hours to prevent spread.
+## Immediate Actions
+- Bullet list of 3–4 urgent steps to take within 24–72 hours to limit spread.
 
-**4. Chemical Treatment**
-Provide specific fungicides/insecticides with concentrations, application frequency, and pre-harvest intervals. Include resistance management rotation if mentioned in context.
+## Chemical Treatment
+- Bullet list of recommended fungicides or pesticides with concentration and frequency from the context.
+- Include resistance-management rotation notes if present in context.
 
-**5. Biological & Organic Alternatives**
-List biocontrol agents, biopesticides, or organic options from the context.
+## Biological Alternatives
+- Bullet list of biocontrol agents, biopesticides, or organic options from the context.
 
-**6. Preventive Measures**
-List cultural and agronomic practices to prevent recurrence.
-
-**7. Source Note**
-List the knowledge base documents this advice was drawn from.
+## Preventive Measures
+- Bullet list of 4–5 cultural and agronomic practices to prevent recurrence.
 
 ---
-Keep responses concise, actionable, and grounded strictly in the provided context.
-""",
-)
+Respond only with the 6 sections above. Do not add a preamble, introduction, or conclusion outside the sections.
+"""
 
-# ── Healthy leaf monitoring prompt ────────────────────────────────────────────
-HEALTHY_PROMPT = PromptTemplate(
-    input_variables=["confidence", "context"],
-    template="""You are an expert agronomist specializing in guava (Psidium guajava) orchard management.
+HEALTHY_PROMPT = """\
+You are an expert agronomist specialising in guava (Psidium guajava) orchard management.
 
 A Vision Transformer (ViT) deep learning model has classified a guava leaf as HEALTHY.
-- Model Confidence: {confidence:.1f}%
+- Model Confidence: {confidence}%
 
-This leaf shows no signs of disease or pest damage. Your role is to provide a preventive care and monitoring advisory.
+This leaf shows no signs of disease. Provide a preventive care and monitoring advisory.
 Use ONLY the information provided in the CONTEXT below.
-Do not recommend treatments not present in the provided context.
-If information is insufficient for any section, write: "Insufficient data — consult a certified agronomist."
-Do not include a treatment section — the plant is healthy and requires no treatment.
+Do not include any curative treatment section — the plant is healthy.
 
 CONTEXT:
 {context}
 
 ---
 
-Generate a structured preventive care advisory with EXACTLY these sections in order:
+Respond with EXACTLY the following 5 sections using ## headings. Do not rename, skip, or reorder sections.
+Use - bullet points inside each section. Do not write long paragraphs.
 
-**1. Plant Health Status**
-Confirm the healthy appearance and what indicators support this classification.
+## Plant Health Status
+2–3 sentences confirming the healthy appearance and what this means for the crop.
 
-**2. Routine Monitoring Checklist**
-List what the farmer should inspect weekly to catch early disease signs.
+## Routine Monitoring Checklist
+- Weekly inspection checklist: what to look for to catch early disease signs.
 
-**3. Preventive Spray Schedule**
-Provide the recommended preventive spray calendar from the context.
+## Preventive Spray Schedule
+- Recommended preventive spray calendar and products from the context.
 
-**4. Nutritional Maintenance**
-Summarize key nutrition practices to maintain plant immunity and vigour.
+## Nutritional Maintenance
+- Key nutrition and fertilisation practices to maintain plant immunity and vigour.
 
-**5. Orchard Hygiene Practices**
-List cultural practices to prevent future disease outbreaks.
-
-**6. Source Note**
-List the knowledge base documents this advice was drawn from.
+## Orchard Hygiene Practices
+- Cultural practices to prevent future disease outbreaks.
 
 ---
-Keep responses concise and actionable. Do not recommend any curative treatments.
-""",
-)
+Respond only with the 5 sections above. Do not add a preamble, introduction, or conclusion outside the sections.
+"""
