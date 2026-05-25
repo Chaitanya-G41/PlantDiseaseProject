@@ -593,7 +593,7 @@ else:
                         model=rag_cfg["llm_model"],
                         google_api_key=api_key,
                         temperature=0.2,
-                        max_output_tokens=800,
+                        max_output_tokens=2048,
                     )
                     context = _format_context(chunks)
                     prompt_val = HEALTHY_PROMPT.format(
