@@ -74,6 +74,50 @@ def _build_query(predicted_class: str, cfg: dict) -> str:
     )
 
 
+# ── Comprehensive multi-query retriever ───────────────────────────────────────
+def _retrieve_comprehensive(
+    predicted_class: str,
+    cfg: dict,
+    retriever: "GuavaRetriever",
+) -> list[dict]:
+    """
+    Run multiple targeted queries to ensure all advisory sections are covered.
+
+    Problem solved: single query clusters around Overview/Symptoms sections
+    and misses Chemical Treatment, Biological Control, and Immediate Action
+    content even when those sections exist in the knowledge base.
+
+    Fix: run one query per advisory section type, merge, deduplicate, cap at 15.
+    """
+    base_query  = _build_query(predicted_class, cfg)
+    disease_name = predicted_class.replace("Guava_", "").replace("_", " ")
+
+    # Section-targeted queries — each one pulls a different part of the KB
+    queries = [
+        base_query,
+        f"guava {disease_name} chemical treatment fungicide pesticide dosage",
+        f"guava {disease_name} immediate action urgent steps control spread",
+        f"guava {disease_name} biological organic biocontrol Trichoderma",
+        f"guava {disease_name} symptoms visual signs confirm diagnosis",
+        f"guava {disease_name} prevention cultural practices management",
+    ]
+
+    seen_content = set()
+    all_chunks   = []
+
+    for q in queries:
+        chunks = retriever.retrieve(q)
+        for c in chunks:
+            # Deduplicate by first 100 chars of content
+            key = c["content"][:100]
+            if key not in seen_content:
+                seen_content.add(key)
+                all_chunks.append(c)
+
+    # Cap at 15 chunks to stay within context window
+    return all_chunks[:15]
+
+
 # ── Main run function ─────────────────────────────────────────────────────────
 def run_rag_chain(
     predicted_class: str,
@@ -103,16 +147,15 @@ def run_rag_chain(
             "GEMINI_API_KEY not set. Copy .env.example to .env and add your key."
         )
 
-    # ── Build retrieval query ─────────────────────────────────────────────────
-    query = _build_query(predicted_class, cfg)
-
-    # ── Retrieve ──────────────────────────────────────────────────────────────
-    chunks = retriever.retrieve(query)
+    # ── Comprehensive multi-query retrieval ───────────────────────────────────
+    # Replaces single retriever.retrieve(query) call.
+    # Runs 6 section-targeted queries and merges results (max 15 chunks).
+    chunks  = _retrieve_comprehensive(predicted_class, cfg, retriever)
     context = _format_context(chunks)
 
     # ── Select prompt ─────────────────────────────────────────────────────────
     healthy_class = cfg.get("healthy_class", "Guava_healthy")
-    is_healthy = predicted_class == healthy_class
+    is_healthy    = predicted_class == healthy_class
 
     # ── Build LLM ─────────────────────────────────────────────────────────────
     llm = ChatGoogleGenerativeAI(
@@ -125,25 +168,23 @@ def run_rag_chain(
     # ── LCEL chain ────────────────────────────────────────────────────────────
     parser = StrOutputParser()
 
-   # In chain.py — replace the prompt_value construction block with this:
-
     if is_healthy:
         prompt_value = HEALTHY_PROMPT.format(
             confidence=f"{confidence * 100:.1f}",
             context=context,
-    )
+        )
     else:
         display_name = predicted_class.replace("Guava_", "").replace("_", " ").title()
         prompt_value = DISEASE_PROMPT.format(
             disease_name=display_name,
             confidence=f"{confidence * 100:.1f}",
             context=context,
-    )
+        )
 
     # Run chain
     from langchain_core.messages import HumanMessage
     response = llm.invoke([HumanMessage(content=prompt_value)])
-    answer = parser.invoke(response)
+    answer   = parser.invoke(response)
 
     # ── Build sources list ────────────────────────────────────────────────────
     sources = [
@@ -151,7 +192,7 @@ def run_rag_chain(
         for c in chunks
     ]
     # Deduplicate sources
-    seen = set()
+    seen          = set()
     unique_sources = []
     for s in sources:
         key = (s["file"], s["section"])

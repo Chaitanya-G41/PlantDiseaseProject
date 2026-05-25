@@ -213,6 +213,10 @@ def _parse_rag_answer(answer: str) -> list[dict]:
             # No body — treat as continuation of previous or skip
             continue
 
+        # ── Skip sections the LLM marked as not applicable ────────────────────
+        if body.strip().upper() == "SKIP_SECTION":
+            continue
+
         # Match heading to a known section
         icon, color = "📌", "#475569"
         for title_kw, sec_icon, sec_color in RAG_SECTIONS:

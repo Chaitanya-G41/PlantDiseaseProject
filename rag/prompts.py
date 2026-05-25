@@ -25,6 +25,9 @@ A Vision Transformer (ViT) deep learning model has detected the following condit
 Use ONLY the information provided in the CONTEXT below to generate your advisory report.
 Do not recommend any treatment not explicitly present in the provided context.
 If information is insufficient for any section, write: "Insufficient data — consult a certified agronomist."
+If a section is NOT APPLICABLE for this specific condition (for example, Chemical Treatment
+for a purely abiotic or nutritional disorder, or Biological Alternatives for a pest-only issue where no biocontrol data exists in context), write exactly: SKIP_SECTION
+
 
 CONTEXT:
 {context}
@@ -91,5 +94,5 @@ Use - bullet points inside each section. Do not write long paragraphs.
 - Cultural practices to prevent future disease outbreaks.
 
 ---
-Respond only with the 5 sections above. Do not add a preamble, introduction, or conclusion outside the sections.
+Respond only with the 5 sections above. Do not add a preamble, introduction, or conclusion outside the sections. If a section is not applicable or has no data in context, write exactly: SKIP_SECTION.
 """

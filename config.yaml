@@ -16,14 +16,14 @@ collection_name: "guava_diseases"
 knowledge_base_dir: "./rag/knowledge_base"
 
 # ── Chunking ──────────────────────────────────────────────────────────────────
-chunk_size: 400
-chunk_overlap: 60
+chunk_size: 600        # was 400 — sections need more room
+chunk_overlap: 80      # was 60
 
 # ── Retrieval ─────────────────────────────────────────────────────────────────
 retriever:
-  dense_top_k: 5
-  bm25_top_k: 5
-  final_top_k: 5
+  dense_top_k: 8       # was 5
+  bm25_top_k: 8        # was 5
+  final_top_k: 8       # was 5 — LLM context window can handle this easily
   use_reranker: false
   reranker_model: "cross-encoder/ms-marco-MiniLM-L-6-v2"
 
@@ -36,12 +36,13 @@ confidence_gate:
 # Maps model output class names to knowledge-base search queries.
 # Edit here when classes change — never edit Python files for this.
 class_query_map:
-  Guava_anthracnose: "guava canker anthracnose disease symptoms treatment management"
-  Guava_healthy:     "guava healthy leaf monitoring prevention care"
-  Guava_insect_bite: "guava insect bite pest damage thrips mealybug treatment"
-  Guava_multiple:    "guava multiple diseases co-infection treatment management"
-  Guava_scorch:      "guava leaf scorch symptoms treatment potassium deficiency"
-  Guava_yld:         "guava yellow leaf disease mummification treatment"
+  Guava_Canker:        "guava canker Pestalotiopsis psidii symptoms lesions treatment fungicide biological"
+  Guava_healthy:       "guava healthy leaf monitoring prevention orchard care nutrition"
+  Guava_insect_bite:   "guava insect bite pest damage thrips mealybug aphid fruit fly treatment control"
+  Guava_Mummification: "guava mummification fruit shoot symptoms causes treatment management"
+  Guava_multiple:      "guava multiple diseases co-infection complex treatment management control"
+  Guava_Rust:          "guava rust Puccinia psidii symptoms treatment fungicide biological control"
+  Guava_scorch:        "guava leaf scorch symptoms abiotic biotic potassium deficiency treatment"
 
 # ── Healthy class identifier (used to select HEALTHY_PROMPT) ─────────────────
 healthy_class: "Guava_healthy"

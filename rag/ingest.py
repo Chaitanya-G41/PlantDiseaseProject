@@ -8,6 +8,11 @@ sentence-transformers, and persists to ChromaDB.
 
 Hash guard: only re-indexes when KB content has changed.
 
+Key improvements over v1:
+  - Raw text loading (preserves ## headings — UnstructuredMarkdownLoader stripped them)
+  - Section metadata attached by scanning backwards in source doc (not just chunk text)
+  - chunk_size/overlap read from config (600/80 recommended)
+
 Run:
     python rag/ingest.py
     python rag/ingest.py --force   # force re-index even if hash matches
@@ -16,7 +21,6 @@ Run:
 import os
 import sys
 import glob
-import json
 import hashlib
 import argparse
 import re
@@ -27,7 +31,7 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 import yaml
-from langchain_community.document_loaders import UnstructuredMarkdownLoader
+from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_community.vectorstores import Chroma
@@ -39,16 +43,6 @@ def load_config(path: str = None) -> dict:
         path = os.path.join(ROOT, "config.yaml")
     with open(path, "r", encoding="utf-8") as f:
         return yaml.safe_load(f)
-
-
-# ── Section extractor ──────────────────────────────────────────────────────────
-def extract_nearest_section(text: str) -> str:
-    """
-    Find the last ## heading that appears before the chunk text.
-    Returns the heading text, or 'General' if none found.
-    """
-    headings = re.findall(r"^##\s+(.+)$", text, re.MULTILINE)
-    return headings[-1].strip() if headings else "General"
 
 
 # ── Hash guard ─────────────────────────────────────────────────────────────────
@@ -77,16 +71,57 @@ def store_hash(chroma_dir: str, hash_val: str):
         f.write(hash_val)
 
 
+# ── Section metadata ───────────────────────────────────────────────────────────
+def attach_section_metadata(chunks: list, full_texts: dict) -> list:
+    """
+    For each chunk, find its nearest preceding ## heading in the source document
+    by scanning backwards from where the chunk appears in the full text.
+
+    This is far more accurate than extract_nearest_section(chunk.page_content)
+    because ## headings are preserved in the raw text but often absent in a chunk
+    that starts mid-section.
+
+    Args:
+        chunks:     List of LangChain Document objects post-splitting
+        full_texts: {source_filename: full_raw_text} lookup built from md_files
+    """
+    for chunk in chunks:
+        source     = chunk.metadata.get("source", "")
+        full_text  = full_texts.get(source, "")
+
+        if not full_text:
+            chunk.metadata["section"] = "General"
+            continue
+
+        # Find where this chunk starts in the source document
+        # Use first 80 chars as a fingerprint (avoids false matches on short chunks)
+        fingerprint = chunk.page_content[:80].strip()
+        chunk_start = full_text.find(fingerprint)
+
+        if chunk_start == -1:
+            # Fallback: scan chunk text itself for any ## heading
+            headings = re.findall(r"^##\s+(.+)$", chunk.page_content, re.MULTILINE)
+            chunk.metadata["section"] = headings[-1].strip() if headings else "General"
+            continue
+
+        # Scan backwards from chunk_start — find the last ## heading before it
+        preceding  = full_text[:chunk_start]
+        headings   = re.findall(r"^##\s+(.+)$", preceding, re.MULTILINE)
+        chunk.metadata["section"] = headings[-1].strip() if headings else "General"
+
+    return chunks
+
+
 # ── Main ingestion ─────────────────────────────────────────────────────────────
 def ingest(config_path: str = None, force: bool = False):
     cfg = load_config(config_path)
 
-    kb_dir       = os.path.join(ROOT, cfg["knowledge_base_dir"].lstrip("./"))
-    chroma_dir   = os.path.join(ROOT, cfg["chroma_persist_dir"].lstrip("./"))
-    chunk_size   = cfg["chunk_size"]
-    chunk_overlap= cfg["chunk_overlap"]
-    embed_model  = cfg["embedding_model"]
-    collection   = cfg["collection_name"]
+    kb_dir        = os.path.join(ROOT, cfg["knowledge_base_dir"].lstrip("./"))
+    chroma_dir    = os.path.join(ROOT, cfg["chroma_persist_dir"].lstrip("./"))
+    chunk_size    = cfg["chunk_size"]
+    chunk_overlap = cfg["chunk_overlap"]
+    embed_model   = cfg["embedding_model"]
+    collection    = cfg["collection_name"]
 
     # ── Hash guard ─────────────────────────────────────────────────────────────
     current_hash = compute_kb_hash(kb_dir)
@@ -99,23 +134,33 @@ def ingest(config_path: str = None, force: bool = False):
 
     print(f"[ingest] KB hash: {current_hash[:8]}…  Indexing...")
 
-    # ── Load markdown files ────────────────────────────────────────────────────
+    # ── Load markdown files as raw text (preserves ## headings) ───────────────
     md_files = sorted(glob.glob(os.path.join(kb_dir, "*.md")))
     if not md_files:
         raise FileNotFoundError(f"No .md files found in: {kb_dir}")
 
-    print(f"[ingest] Loading {len(md_files)} documents...")
-    raw_docs = []
+    print(f"[ingest] Loading {len(md_files)} documents (raw text mode)...")
+
+    raw_docs   = []
+    full_texts = {}   # {source_filename: full_raw_text} — used for section lookup
+
     for filepath in md_files:
-        loader = UnstructuredMarkdownLoader(filepath, mode="single")
-        docs = loader.load()
-        source_name = os.path.basename(filepath)
-        for doc in docs:
-            doc.metadata["source"] = source_name
-            doc.metadata["disease"] = os.path.splitext(source_name)[0]
-        raw_docs.extend(docs)
+        source_name  = os.path.basename(filepath)
+        disease_name = os.path.splitext(source_name)[0]
+
+        with open(filepath, "r", encoding="utf-8") as f:
+            raw_text = f.read()
+
+        full_texts[source_name] = raw_text   # store for section metadata later
+
+        doc = Document(
+            page_content=raw_text,
+            metadata={"source": source_name, "disease": disease_name},
+        )
+        raw_docs.append(doc)
 
     # ── Chunk ─────────────────────────────────────────────────────────────────
+    # Separators prioritise section boundaries first, then paragraphs, then lines
     splitter = RecursiveCharacterTextSplitter(
         chunk_size=chunk_size,
         chunk_overlap=chunk_overlap,
@@ -124,14 +169,15 @@ def ingest(config_path: str = None, force: bool = False):
     )
     chunks = splitter.split_documents(raw_docs)
 
-    # Attach section metadata to every chunk
-    for chunk in chunks:
-        chunk.metadata["section"] = extract_nearest_section(chunk.page_content)
+    # ── Attach section metadata (backwards-scan method) ───────────────────────
+    chunks = attach_section_metadata(chunks, full_texts)
 
+    # ── Report ────────────────────────────────────────────────────────────────
     print(f"[ingest] Total chunks: {len(chunks)}")
-    for src in sorted({c.metadata['source'] for c in chunks}):
-        n = sum(1 for c in chunks if c.metadata['source'] == src)
-        print(f"         {src}: {n} chunks")
+    for src in sorted({c.metadata["source"] for c in chunks}):
+        n        = sum(1 for c in chunks if c.metadata["source"] == src)
+        sections = {c.metadata["section"] for c in chunks if c.metadata["source"] == src}
+        print(f"         {src}: {n} chunks | sections: {sorted(sections)}")
 
     # ── Embed + store ─────────────────────────────────────────────────────────
     print(f"[ingest] Embedding with: {embed_model}")
@@ -141,13 +187,12 @@ def ingest(config_path: str = None, force: bool = False):
         encode_kwargs={"normalize_embeddings": True},
     )
 
-    # Clear existing ChromaDB if re-indexing
+    # Clear existing ChromaDB before re-indexing to avoid duplicate chunks
     if os.path.exists(chroma_dir):
         import shutil
         try:
             shutil.rmtree(chroma_dir)
         except PermissionError:
-            # Windows may lock SQLite files — try individual removal
             import time
             time.sleep(1)
             shutil.rmtree(chroma_dir, ignore_errors=True)
@@ -159,11 +204,11 @@ def ingest(config_path: str = None, force: bool = False):
         persist_directory=chroma_dir,
         collection_name=collection,
     )
-    # Chroma 0.4+ auto-persists — no manual persist() call needed
+    # Chroma 0.4+ auto-persists — no manual .persist() call needed
 
     # ── Store hash ────────────────────────────────────────────────────────────
     store_hash(chroma_dir, current_hash)
-    print(f"[ingest] DONE. Indexed {len(chunks)} chunks into ChromaDB at: {chroma_dir}")
+    print(f"[ingest] ✓ Indexed {len(chunks)} chunks → ChromaDB at: {chroma_dir}")
     return len(chunks)
 
 
@@ -171,6 +216,6 @@ def ingest(config_path: str = None, force: bool = False):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="GuavaScan KB Ingestion")
     parser.add_argument("--config", default=None, help="Path to config.yaml")
-    parser.add_argument("--force", action="store_true", help="Force re-index")
+    parser.add_argument("--force",  action="store_true", help="Force re-index")
     args = parser.parse_args()
     ingest(config_path=args.config, force=args.force)
