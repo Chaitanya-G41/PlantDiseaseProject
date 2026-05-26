@@ -764,21 +764,79 @@ elif zone is not None:
         advisory_label = "General Guava Care"
         st.warning("⚠️ Low confidence — showing general guava care guidance.")
 
+# ══════════════════════════════════════════════════════════════════════════════
+# PASTE THIS BLOCK into app4.py, replacing the old session-cache + spinner block
+# inside the `elif zone is not None:` branch (roughly lines 370–430 of app4.py)
+# ══════════════════════════════════════════════════════════════════════════════
+ 
     current_pred = (query_class, round(query_conf, 3))
-
+ 
     if st.session_state.last_prediction == current_pred and st.session_state.last_rag_result:
         rag_result = st.session_state.last_rag_result
         st.caption("📌 Advisory loaded from session cache.")
     else:
-        with st.spinner("🔍 Retrieving from knowledge base and generating advisory..."):
+        # ── Section-by-section progress display ───────────────────────────────
+        progress_placeholder = st.empty()
+        sections_done = []
+ 
+        def _update_progress(section_name: str = None, done: bool = False):
+            """Show a live pill-list of sections as they complete."""
+            if section_name:
+                sections_done.append(section_name)
+            pills = ""
+            all_sections = [
+                "Diagnosis Summary", "Symptoms to Confirm", "Immediate Actions",
+                "Chemical Treatment", "Biological Alternatives", "Preventive Measures",
+            ]
+            for s in all_sections:
+                if s in sections_done:
+                    pills += f'<span style="background:#dcfce7; color:#14532d; border:1px solid #bbf7d0; border-radius:20px; padding:4px 12px; margin:3px; font-family:\'DM Sans\',sans-serif; font-size:13px; font-weight:700; display:inline-block;">✓ {s}</span>'
+                elif not done and s == (all_sections[len(sections_done)] if len(sections_done) < len(all_sections) else None):
+                    pills += f'<span style="background:#fef9c3; color:#854d0e; border:1px solid #fde047; border-radius:20px; padding:4px 12px; margin:3px; font-family:\'DM Sans\',sans-serif; font-size:13px; font-weight:700; display:inline-block;">⏳ {s}</span>'
+                else:
+                    pills += f'<span style="background:#f1f5f9; color:#94a3b8; border:1px solid #e2e8f0; border-radius:20px; padding:4px 12px; margin:3px; font-family:\'DM Sans\',sans-serif; font-size:13px; font-weight:700; display:inline-block;">○ {s}</span>'
+            progress_placeholder.markdown(
+                f'<div style="margin-bottom:16px; line-height:2.2;">'
+                f'<span style="font-family:\'JetBrains Mono\',monospace; font-size:12px; '
+                f'color:#64748b; font-weight:700; letter-spacing:1px; display:block; margin-bottom:8px;">'
+                f'🔍 GENERATING ADVISORY SECTIONS</span>{pills}</div>',
+                unsafe_allow_html=True,
+            )
+ 
+        with st.spinner(""):
+            _update_progress()  # show initial empty state
             try:
                 from rag.chain import run_rag_chain
-
+ 
                 if zone["rag_mode"] == "full":
-                    rag_result = run_rag_chain(top_class, top_conf, rag_cfg, retriever)
+                    # ── Patch chain to report progress back to Streamlit ──────
+                    # We monkey-patch the section generator to call _update_progress
+                    # after each section completes, giving live feedback.
+                    import rag.chain as _chain_module
+ 
+                    _original_generate = _chain_module._generate_section
+ 
+                    def _tracked_generate(section_title, *args, **kwargs):
+                        result = _original_generate(section_title, *args, **kwargs)
+                        _update_progress(section_title)
+                        return result
+ 
+                    _chain_module._generate_section = _tracked_generate
+                    try:
+                        rag_result = run_rag_chain(top_class, top_conf, rag_cfg, retriever)
+                    finally:
+                        # Always restore original — even if an exception occurs
+                        _chain_module._generate_section = _original_generate
+ 
+                    _update_progress(done=True)
+                    progress_placeholder.empty()
+ 
                 else:
+                    # ── Fallback (low-confidence) path ────────────────────────
+                    # Also fixed: thinking_budget=0, model_kwargs passthrough
                     fallback_query = rag_cfg.get("fallback_query", "guava orchard management prevention care")
                     chunks = retriever.retrieve(fallback_query)
+ 
                     from rag.chain import _format_context
                     from rag.prompts import HEALTHY_PROMPT
                     from langchain_google_genai import ChatGoogleGenerativeAI
@@ -787,29 +845,49 @@ elif zone is not None:
                     from dotenv import load_dotenv
                     load_dotenv(os.path.join(ROOT, ".env"))
                     api_key = os.getenv("GEMINI_API_KEY")
+ 
+                    # ── FIX: use model_kwargs + thinking_budget=0 ─────────────
                     llm = ChatGoogleGenerativeAI(
                         model=rag_cfg["llm_model"],
                         google_api_key=api_key,
                         temperature=0.2,
-                        max_output_tokens=2048,
+                        model_kwargs={
+                            "generation_config": {
+                                "max_output_tokens": 8192,
+                                "thinking_config": {"thinking_budget": 0},
+                            }
+                        },
                     )
-                    context   = _format_context(chunks)
+                    context    = _format_context(chunks)
                     prompt_val = HEALTHY_PROMPT.format(
-                        confidence=query_conf * 100, context=context
+                        confidence=f"{query_conf * 100:.1f}", context=context
                     )
                     response   = llm.invoke([HumanMessage(content=prompt_val)])
-                    answer     = StrOutputParser().invoke(response)
-                    sources    = [{"file": c["source"], "section": c["section"]} for c in chunks]
+ 
+                    # ── FIX: log finish_reason ────────────────────────────────
+                    try:
+                        reason = response.response_metadata.get("finish_reason", "unknown")
+                        print(f"[app4] fallback finish_reason={reason}")
+                        if reason == "MAX_TOKENS":
+                            st.warning("⚠️ Response may be truncated (MAX_TOKENS). "
+                                       "Check console for details.")
+                    except Exception:
+                        pass
+ 
+                    answer  = StrOutputParser().invoke(response)
+                    sources = [{"file": c["source"], "section": c["section"]} for c in chunks]
                     rag_result = {"answer": answer, "sources": sources}
-
+                    progress_placeholder.empty()
+ 
                 st.session_state.last_prediction = current_pred
                 st.session_state.last_rag_result  = rag_result
-
+ 
             except Exception as e:
+                progress_placeholder.empty()
                 st.error(f"RAG chain error: {e}")
                 st.info("Ensure GEMINI_API_KEY is set in .env and the knowledge base is indexed.")
                 rag_result = None
-
+ 
     if rag_result:
         render_rag_panel(rag_result, advisory_label)
 
