@@ -118,26 +118,19 @@ def _retrieve_comprehensive(
 # top chunks for this section, the context is almost certainly too thin to
 # generate anything useful and we skip the LLM call entirely.
 _SECTION_KEYWORDS = {
-    "Diagnosis Summary":       ["cause", "causal", "fungus", "bacteria", "virus", "pathogen",
-                                 "disease", "condition", "infection", "mite", "insect"],
-    "Symptoms to Confirm":     ["symptom", "sign", "lesion", "spot", "discolor", "wilt",
-                                 "yellow", "brown", "necrosis", "appear", "look"],
-    "Immediate Actions":       ["action", "urgent", "remove", "prune", "isolate", "spray",
-                                 "apply", "treat", "control", "sanitize", "step"],
-    "Chemical Treatment":      ["fungicide", "pesticide", "chemical", "copper", "mancozeb",
-                                 "chlorothalonil", "spray", "dose", "concentration", "ppm",
-                                 "ml", "g/l", "application"],
-    "Biological Alternatives": ["biocontrol", "biological", "trichoderma", "neem", "organic",
-                                 "biopesticide", "beneficial", "bacillus", "pseudomonas"],
-    "Preventive Measures":     ["prevent", "cultural", "sanitation", "prune", "spacing",
-                                 "drainage", "avoid", "rotation", "resistant"],
-    # healthy-leaf sections
-    "Plant Health Status":     ["healthy", "health", "vigour", "vigor", "normal", "good"],
-    "Routine Monitoring Checklist": ["monitor", "inspect", "check", "watch", "observe", "weekly"],
-    "Preventive Spray Schedule":    ["spray", "schedule", "calendar", "preventive", "interval"],
-    "Nutritional Maintenance":      ["nutrient", "fertiliz", "nitrogen", "potassium", "phosphorus",
-                                     "micronutrient", "soil"],
-    "Orchard Hygiene Practices":    ["hygiene", "sanitation", "fallen", "debris", "clean", "orchard"],
+    "Diagnosis Summary":          ["cause", "causal", "fungus", "bacteria", "pathogen",
+                                   "disease", "condition", "infection", "insect", "mite"],
+    "Key Symptoms":               ["symptom", "sign", "lesion", "spot", "discolor", "wilt",
+                                   "yellow", "brown", "necrosis", "appear", "look"],
+    "Treatment Recommendations":  ["fungicide", "pesticide", "chemical", "copper", "spray",
+                                   "apply", "treat", "control", "trichoderma", "neem",
+                                   "biological", "organic", "remove", "prune", "action"],
+    "Prevention Tips":            ["prevent", "cultural", "sanitation", "prune", "spacing",
+                                   "drainage", "avoid", "rotation", "resistant"],
+    # healthy sections
+    "Plant Health Status":        ["healthy", "health", "vigour", "vigor", "normal"],
+    "Monitoring and Prevention":  ["monitor", "inspect", "check", "spray", "schedule"],
+    "Nutritional and Crop Care":  ["nutrient", "fertiliz", "nitrogen", "potassium", "soil"],
 }
 
 _COMPLETENESS_THRESHOLD = 2  # min keyword hits required to attempt generation
@@ -178,7 +171,7 @@ def _build_llm(cfg: dict, api_key: str) -> ChatGoogleGenerativeAI:
         # Top-level max_output_tokens is silently dropped by LangChain wrapper.
         model_kwargs={
             "generation_config": {
-                "max_output_tokens": 8192,        # large ceiling — sections are small
+                "max_output_tokens": 5000,        # large ceiling — sections are small
                 "thinking_config": {
                     "thinking_budget": 0,          # FIX: disable thinking tokens
                 },

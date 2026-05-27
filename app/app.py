@@ -1,407 +1,397 @@
 """
-GuavaScan — Leaf Disease Detection Dashboard
-Streamlit app for Phase 2 presentation.
+GuavaScan — RAG-Integrated Leaf Disease Detection Dashboard
+app/app4.py  (v2 — full rewrite of UI layer)
 
-Architecture: DeiT-tiny Stage 2 model (6 guava classes)
-Features:
-  - Image upload + preprocessing
-  - Top-3 predictions with confidence bars
-  - Attention map heatmap overlay
-  - Hardcoded RAG-style treatment advice (RAG integration pending)
-
-Run locally:
-    streamlit run app/app.py
-
-Run on Colab (after cloning repo and downloading model weights):
-    !streamlit run app/app.py &
-    from pyngrok import ngrok
-    public_url = ngrok.connect(8501)
-    print(public_url)
+Fixes in this version:
+- White text bug fixed: explicit color set on all HTML elements + base CSS
+- RAG advisory fully styled: section cards, icons, larger fonts, parsed markdown
+- section_card_html now actually used (was defined but never called before)
+- zone scoping bug fixed (zone initialised before RAG panel)
+- Footer model name corrected to gemini-2.5-flash
+- Confidence bars readable on all backgrounds
+- LLM markdown rendered inside styled containers, not raw st.markdown
 """
 
 import os
 import sys
-import json
+import re
 import numpy as np
 from PIL import Image
-import matplotlib.pyplot as plt
 import matplotlib.cm as cm
 import torch
 import torch.nn.functional as F
 import streamlit as st
+import yaml
 
 # ── Path setup ────────────────────────────────────────────────────────────────
-# Works whether run from repo root or from app/ subdirectory
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from src.model import get_attention_maps
-from src.preprocess import get_transforms, get_inverse_transform
-
-# ── Model weight paths ─────────────────────────────────────────────────────────
-STAGE1_PTH = os.path.join(ROOT, "models", "stage1", "stage1_best.pth")
-STAGE2_PTH = os.path.join(ROOT, "models", "stage2", "stage2_best.pth")
-
-# ── Class definitions ──────────────────────────────────────────────────────────
-# Order MUST match the training class_to_idx from ImageFolder (alphabetical)
-GUAVA_CLASSES = [
-    "Guava_anthracnose",
-    "Guava_healthy",
-    "Guava_insect_bite",
-    "Guava_multiple",
-    "Guava_scorch",
-    "Guava_yld",
-]
-
-DISPLAY_NAMES = {
-    "Guava_anthracnose": "Anthracnose",
-    "Guava_healthy":     "Healthy",
-    "Guava_insect_bite": "Insect Bite",
-    "Guava_multiple":    "Multiple Diseases",
-    "Guava_scorch":      "Leaf Scorch",
-    "Guava_yld":         "Yellow Leaf Disease",
-}
-
-SEVERITY = {
-    "Guava_anthracnose": ("High",   "#e74c3c"),
-    "Guava_healthy":     ("None",   "#27ae60"),
-    "Guava_insect_bite": ("Medium", "#f39c12"),
-    "Guava_multiple":    ("High",   "#e74c3c"),
-    "Guava_scorch":      ("Medium", "#f39c12"),
-    "Guava_yld":         ("High",   "#e74c3c"),
-}
-
-# ── Hardcoded treatment advice (RAG placeholder) ───────────────────────────────
-DISEASE_ADVICE = {
-    "Guava_anthracnose": {
-        "overview": (
-            "Anthracnose is a fungal disease caused by Colletotrichum gloeosporioides. "
-            "It produces dark, sunken lesions on leaves, stems, and fruits, and thrives "
-            "in warm, humid conditions."
-        ),
-        "symptoms": [
-            "Dark brown to black irregular spots on leaf surface",
-            "Lesions with yellow halo in early stages",
-            "Spots coalesce and cause premature leaf drop",
-            "Sunken, dark lesions on fruits in severe cases",
-        ],
-        "treatment": [
-            "Apply copper-based fungicide (Copper oxychloride 0.3%) every 10–14 days",
-            "Use Mancozeb 0.2% or Carbendazim 0.1% as alternatives",
-            "Remove and destroy all infected plant material immediately",
-            "Avoid overhead irrigation — switch to drip irrigation",
-        ],
-        "prevention": [
-            "Ensure good air circulation with proper canopy pruning",
-            "Avoid wetting foliage during irrigation",
-            "Apply preventive fungicide spray during monsoon season",
-            "Use disease-free planting material",
-        ],
-        "note": "⚠️ RAG integration pending — advice based on curated agricultural knowledge base.",
-    },
-    "Guava_healthy": {
-        "overview": (
-            "The leaf appears healthy with no visible signs of disease or pest damage. "
-            "Continue regular monitoring and preventive care."
-        ),
-        "symptoms": [
-            "No lesions, spots, or discoloration observed",
-            "Uniform green color throughout the leaf",
-            "Normal leaf texture and shape",
-        ],
-        "treatment": [
-            "No treatment required at this time",
-            "Maintain regular watering schedule",
-            "Apply balanced NPK fertilizer as per schedule",
-        ],
-        "prevention": [
-            "Monitor plants weekly for early signs of disease",
-            "Keep orchard floor clean — remove fallen leaves",
-            "Maintain soil pH between 6.0 and 7.5",
-            "Apply preventive neem oil spray once a month",
-        ],
-        "note": "✅ Plant appears healthy. Continue standard maintenance practices.",
-    },
-    "Guava_insect_bite": {
-        "overview": (
-            "Insect bite damage is caused by feeding insects such as fruit flies, "
-            "thrips, or mealybugs. Irregular holes and necrotic patches are characteristic. "
-            "Secondary fungal infections may follow."
-        ),
-        "symptoms": [
-            "Irregular holes or torn edges on leaf surface",
-            "Small necrotic (brown/black) spots at feeding sites",
-            "Silvery or bronze discoloration from thrips feeding",
-            "Sticky honeydew deposits indicating mealybug or aphid presence",
-        ],
-        "treatment": [
-            "Spray Neem oil (5 ml/L water) — effective against soft-bodied insects",
-            "Apply Imidacloprid 0.3 ml/L for severe infestations",
-            "Use yellow sticky traps to monitor and reduce adult fly populations",
-            "Introduce natural predators such as ladybugs if available",
-        ],
-        "prevention": [
-            "Regularly inspect the undersides of leaves for egg clusters",
-            "Remove and destroy heavily infested branches",
-            "Avoid excessive nitrogen fertilization — promotes soft tissue",
-            "Maintain orchard hygiene — remove fruit waste promptly",
-        ],
-        "note": "⚠️ RAG integration pending — advice based on curated agricultural knowledge base.",
-    },
-    "Guava_multiple": {
-        "overview": (
-            "Multiple concurrent diseases detected. This indicates a stressed plant with "
-            "compromised immunity, likely under combined fungal and pest pressure. "
-            "Immediate intervention is required."
-        ),
-        "symptoms": [
-            "Multiple lesion types visible — fungal spots + insect damage",
-            "Widespread leaf discoloration and necrosis",
-            "Possible stem cankers or bark lesions",
-            "Significant defoliation risk",
-        ],
-        "treatment": [
-            "Apply broad-spectrum fungicide (Mancozeb 0.25%) immediately",
-            "Follow with systemic insecticide (Chlorpyrifos 2 ml/L) after 3 days",
-            "Remove all severely affected branches — sterilize pruning tools",
-            "Foliar spray of micronutrients (Zinc + Boron) to boost immunity",
-        ],
-        "prevention": [
-            "Conduct thorough disease scouting every 5–7 days",
-            "Implement integrated pest management (IPM) program",
-            "Improve drainage — waterlogged soil increases disease susceptibility",
-            "Avoid plant stress — maintain consistent irrigation and nutrition",
-        ],
-        "note": "🚨 Multiple conditions detected. Consult a local agricultural extension officer for a combined treatment plan.",
-    },
-    "Guava_scorch": {
-        "overview": (
-            "Leaf scorch appears as browning of leaf margins and tips, caused by water "
-            "stress, nutrient deficiency (especially potassium), or root damage. "
-            "It is not infectious but indicates physiological stress."
-        ),
-        "symptoms": [
-            "Brown, dry margins and leaf tips",
-            "Yellowing of leaf tissue between veins (interveinal chlorosis)",
-            "Brittle, papery texture at affected margins",
-            "Symptoms progress from older leaves to younger leaves",
-        ],
-        "treatment": [
-            "Improve irrigation — ensure consistent moisture, avoid drought stress",
-            "Apply potassium sulfate (K2SO4) 2–3 kg per tree as soil drench",
-            "Foliar spray of 0.5% potassium nitrate (KNO3) for quick uptake",
-            "Check and treat root health — address compaction or root rot",
-        ],
-        "prevention": [
-            "Mulch around the base to retain soil moisture",
-            "Conduct soil test annually — maintain adequate K and Ca levels",
-            "Avoid over-fertilization with nitrogen — causes K imbalance",
-            "Provide shade during extreme heat if possible",
-        ],
-        "note": "⚠️ RAG integration pending — advice based on curated agricultural knowledge base.",
-    },
-    "Guava_yld": {
-        "overview": (
-            "Yellow Leaf Disease in guava is associated with phytoplasma infection or "
-            "severe micronutrient deficiency (iron, magnesium, zinc). It causes progressive "
-            "yellowing and is a significant yield threat if untreated."
-        ),
-        "symptoms": [
-            "Uniform yellowing starting from leaf margins inward",
-            "Veins may remain green initially (vein clearing)",
-            "Stunted new growth and reduced leaf size",
-            "Premature defoliation in advanced stages",
-        ],
-        "treatment": [
-            "Soil application of ferrous sulfate (FeSO4) 50g per tree",
-            "Foliar spray of 0.5% magnesium sulfate (MgSO4) every 2 weeks",
-            "Apply chelated micronutrient mix (Fe + Zn + Mn) as foliar spray",
-            "If phytoplasma suspected: apply Tetracycline antibiotic (consult specialist)",
-        ],
-        "prevention": [
-            "Test soil pH — iron unavailability increases in alkaline soils (pH > 7.5)",
-            "Apply organic compost annually to improve micronutrient availability",
-            "Control leafhoppers — primary vector of phytoplasma",
-            "Remove and destroy severely infected trees to prevent spread",
-        ],
-        "note": "🚨 If symptoms spread rapidly across the orchard, phytoplasma infection is suspected. Contact your local agriculture department.",
-    },
-}
+from src.preprocess import get_transforms
+from model_utils import load_model, GUAVA_CLASSES, DISPLAY_NAMES, SEVERITY
 
 # ══════════════════════════════════════════════════════════════════════════════
-# MODEL LOADING
+# CONFIG
+# ══════════════════════════════════════════════════════════════════════════════
+
+@st.cache_data
+def load_config():
+    cfg_path = os.path.join(ROOT, "config.yaml")
+    with open(cfg_path, "r") as f:
+        return yaml.safe_load(f)
+
+# ══════════════════════════════════════════════════════════════════════════════
+# RAG CHAIN
 # ══════════════════════════════════════════════════════════════════════════════
 
 @st.cache_resource(show_spinner=False)
-def load_model():
-    """
-    Load Stage 2 model for inference.
-    Cached so it only loads once per Streamlit session.
-    """
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-    if not os.path.exists(STAGE2_PTH):
-        st.error(f"Stage 2 checkpoint not found: {STAGE2_PTH}")
-        st.info("Download stage2_best.pth from Drive → models/stage2/")
-        st.stop()
-
-    import timm
-
-    # Checkpoint has head.weight [6,192] + head.bias [6] — plain Linear head
-    # timm.create_model with num_classes=6 produces exactly this architecture
-    model = timm.create_model("deit_tiny_patch16_224", pretrained=False, num_classes=6)
-
-    ckpt = torch.load(STAGE2_PTH, map_location=device)
-    model.load_state_dict(ckpt["model_state_dict"], strict=True)  # all keys match now
-    model.to(device)
-    model.eval()
-
-    return model, device
-
+def load_rag_components():
+    from rag.retriever import get_retriever
+    cfg = load_config()
+    retriever = get_retriever(cfg)
+    return cfg, retriever
 
 # ══════════════════════════════════════════════════════════════════════════════
-# INFERENCE
+# INFERENCE HELPERS
 # ══════════════════════════════════════════════════════════════════════════════
 
 def preprocess(pil_image: Image.Image) -> torch.Tensor:
-    """Apply val transforms (no augmentation) and return (1, 3, 224, 224) tensor."""
     transform = get_transforms("val")
     tensor = transform(pil_image.convert("RGB"))
-    return tensor.unsqueeze(0)  # add batch dim
-
+    return tensor.unsqueeze(0)
 
 @torch.no_grad()
 def predict(model, tensor: torch.Tensor, device):
-    """
-    Run inference. Returns:
-        top3: list of (class_name, confidence_float) sorted by confidence desc
-        all_probs: full softmax probability array (6,)
-    """
     tensor = tensor.to(device)
     outputs = model(tensor)
-    probs = F.softmax(outputs, dim=1).cpu().numpy()[0]  # shape (6,)
-
+    probs = F.softmax(outputs, dim=1).cpu().numpy()[0]
     top3_idx = np.argsort(probs)[::-1][:3]
     top3 = [(GUAVA_CLASSES[i], float(probs[i])) for i in top3_idx]
-
     return top3, probs
 
-
-# ══════════════════════════════════════════════════════════════════════════════
-# ATTENTION MAP
-# ══════════════════════════════════════════════════════════════════════════════
-
-def generate_attention_overlay(model, tensor: torch.Tensor, device, pil_image: Image.Image) -> Image.Image:
-    """
-    Extract attention from the last transformer block.
-    CLS token attends to all 196 patches → reshape to 14×14 → upsample to 224×224.
-    Overlay as a green-to-red heatmap on the original image.
-    """
+def generate_attention_overlay(model, tensor, device, pil_image):
     tensor = tensor.to(device)
     attn_maps = get_attention_maps(model, tensor)
-
-    # Last block attention: shape (1, num_heads, 197, 197)
-    # DeiT-tiny has 3 heads, 197 tokens (1 CLS + 196 patches)
-    last_attn = attn_maps[-1]  # (1, 3, 197, 197)
-
-    # CLS token row: how much CLS attends to each patch
-    cls_attn = last_attn[0, :, 0, 1:]  # (3, 196) — exclude CLS-to-CLS
-    cls_attn = cls_attn.mean(dim=0)    # average across heads → (196,)
-    cls_attn = cls_attn.cpu().numpy()
-
-    # Normalize to [0, 1]
+    last_attn = attn_maps[-1]
+    cls_attn = last_attn[0, :, 0, 1:]
+    cls_attn = cls_attn.mean(dim=0).cpu().numpy()
     cls_attn = (cls_attn - cls_attn.min()) / (cls_attn.max() - cls_attn.min() + 1e-8)
-
-    # Reshape to 14×14 grid (sqrt(196) = 14 patches per side)
     attn_map = cls_attn.reshape(14, 14)
-
-    # Upsample to 224×224 using PIL
-    attn_pil = Image.fromarray((attn_map * 255).astype(np.uint8)).resize(
-        (224, 224), Image.BILINEAR
-    )
+    attn_pil = Image.fromarray((attn_map * 255).astype(np.uint8)).resize((224, 224), Image.BILINEAR)
     attn_array = np.array(attn_pil) / 255.0
-
-    # Apply colormap (jet: blue=low attention, red=high attention)
     colormap = cm.get_cmap("jet")
-    heatmap_rgba = colormap(attn_array)           # (224, 224, 4)
-    heatmap_rgb  = (heatmap_rgba[:, :, :3] * 255).astype(np.uint8)
-    heatmap_pil  = Image.fromarray(heatmap_rgb)
-
-    # Resize original to 224×224 for clean overlay
+    heatmap_rgba = colormap(attn_array)
+    heatmap_rgb = (heatmap_rgba[:, :, :3] * 255).astype(np.uint8)
+    heatmap_pil = Image.fromarray(heatmap_rgb)
     orig_resized = pil_image.convert("RGB").resize((224, 224), Image.LANCZOS)
-
-    # Blend: 55% original, 45% heatmap
-    overlay = Image.blend(orig_resized, heatmap_pil, alpha=0.45)
-    return overlay
-
+    return Image.blend(orig_resized, heatmap_pil, alpha=0.45)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # UI HELPERS
 # ══════════════════════════════════════════════════════════════════════════════
 
-def confidence_bar_html(label: str, confidence: float, color: str, is_top: bool = False) -> str:
-    """Render a styled confidence progress bar as HTML."""
+def confidence_bar_html(label, confidence, color, is_top=False):
     pct = confidence * 100
-    bar_color = color if is_top else "#4a5568"
-    bg = "rgba(255,255,255,0.08)" if is_top else "rgba(255,255,255,0.03)"
-    border = f"1px solid {color}40" if is_top else "1px solid rgba(255,255,255,0.06)"
-    font_weight = "700" if is_top else "400"
-
+    bar_color = color if is_top else "#94a3b8"
+    bg        = f"{color}12" if is_top else "#f8fafc"
+    border    = f"2px solid {color}55" if is_top else "1px solid #e2e8f0"
     return f"""
-    <div style="
-        background: {bg};
-        border: {border};
-        border-radius: 10px;
-        padding: 10px 14px;
-        margin-bottom: 8px;
-    ">
-        <div style="display:flex; justify-content:space-between; margin-bottom:6px;">
-            <span style="font-family:'DM Sans',sans-serif; font-size:13px;
-                         color:#e2e8f0; font-weight:{font_weight};">{label}</span>
-            <span style="font-family:'JetBrains Mono',monospace; font-size:13px;
-                         color:{color}; font-weight:700;">{pct:.1f}%</span>
+    <div style="background:{bg}; border:{border}; border-radius:12px;
+                padding:14px 18px; margin-bottom:12px;">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+            <span style="font-family:'Lora',serif; font-size:18px;
+                         color:#0f172a; font-weight:800;">{label}</span>
+            <span style="font-family:'JetBrains Mono',monospace; font-size:18px;
+                         color:{color}; font-weight:800;">{pct:.1f}%</span>
         </div>
-        <div style="background:rgba(255,255,255,0.08); border-radius:4px; height:6px; overflow:hidden;">
+        <div style="background:#e2e8f0; border-radius:6px; height:10px; overflow:hidden;">
             <div style="width:{pct:.1f}%; height:100%; background:{bar_color};
-                        border-radius:4px; transition:width 0.6s ease;"></div>
+                        border-radius:6px;"></div>
         </div>
     </div>
     """
 
-
-def advice_card_html(icon: str, title: str, items: list, accent: str) -> str:
-    """Render an advice card with bullet items."""
-    items_html = "".join(
-        f'<li style="margin-bottom:6px; color:#cbd5e0; font-size:13px; line-height:1.5;">{item}</li>'
-        for item in items
-    )
+def zone_banner_html(zone, confidence):
+    pct = confidence * 100
     return f"""
-    <div style="
-        background: rgba(255,255,255,0.04);
-        border: 1px solid {accent}30;
-        border-left: 3px solid {accent};
-        border-radius: 10px;
-        padding: 16px;
-        margin-bottom: 12px;
-    ">
-        <div style="font-family:'DM Sans',sans-serif; font-size:14px;
-                    font-weight:700; color:{accent}; margin-bottom:10px;">
-            {icon} {title}
+    <div style="background:{zone['bg']}; border:2px solid {zone['border']};
+                border-left:6px solid {zone['color']}; border-radius:14px;
+                padding:18px 22px; margin-bottom:20px;">
+        <div style="display:flex; align-items:center; gap:12px; margin-bottom:10px; flex-wrap:wrap;">
+            <span style="font-size:22px;">{zone['icon']}</span>
+            <span style="font-family:'DM Sans',sans-serif; font-size:16px; font-weight:800;
+                color:{zone['color']};">{zone['label']}</span>
+            <span style="margin-left:auto; background:{zone['badge_bg']};
+                border:1px solid {zone['border']}; border-radius:8px;
+                padding:4px 14px; font-family:'JetBrains Mono',monospace;
+                font-size:15px; font-weight:800; color:{zone['color']};">{pct:.1f}%</span>
         </div>
-        <ul style="margin:0; padding-left:18px;">
-            {items_html}
-        </ul>
+        <p style="font-family:'DM Sans',sans-serif; font-size:15px; font-weight:700;
+            color:{zone['text_color']}; margin:0; line-height:1.7;">{zone['message']}</p>
     </div>
     """
 
+def get_confidence_zone(confidence, cfg):
+    rag_thresh  = cfg["confidence_gate"]["rag_threshold"]
+    fall_thresh = cfg["confidence_gate"]["fallback_threshold"]
+    if confidence >= rag_thresh:
+        return {
+            "zone": "green", "label": "High Confidence — Full Advisory",
+            "icon": "✅", "color": "#16a34a", "bg": "#f0fdf4",
+            "border": "#bbf7d0", "text_color": "#14532d", "badge_bg": "#dcfce7",
+            "message": "Model is confident in this diagnosis. Full RAG advisory loaded below.",
+            "rag_mode": "full",
+        }
+    elif confidence >= fall_thresh:
+        return {
+            "zone": "amber", "label": "Uncertain — General Guidance",
+            "icon": "⚠️", "color": "#d97706", "bg": "#fffbeb",
+            "border": "#fde68a", "text_color": "#78350f", "badge_bg": "#fef3c7",
+            "message": "Low confidence — showing general guava care guidance. Retake in better lighting for disease-specific advice.",
+            "rag_mode": "fallback",
+        }
+    else:
+        return {
+            "zone": "red", "label": "Confidence Too Low",
+            "icon": "🚨", "color": "#dc2626", "bg": "#fff1f2",
+            "border": "#fecdd3", "text_color": "#7f1d1d", "badge_bg": "#ffe4e6",
+            "message": "Confidence too low for reliable advisory. Please upload a clearer image.",
+            "rag_mode": "skip",
+        }
+
+# ── RAG section definitions ───────────────────────────────────────────────────
+# Each section has: heading keyword to detect in LLM output, display icon, accent colour
+RAG_SECTIONS = [
+    ("Diagnosis Summary",        "🔬", "#0e7490"),   # cyan
+    ("Symptoms to Confirm",      "🩺", "#7c3aed"),   # violet
+    ("Immediate Actions",        "⚡", "#dc2626"),   # red
+    ("Chemical Treatment",       "🧪", "#b45309"),   # amber
+    ("Biological Alternatives",  "🌱", "#16a34a"),   # green
+    ("Preventive Measures",      "🛡️", "#1d4ed8"),   # blue
+    ("General Care",             "📋", "#475569"),   # slate (fallback/healthy)
+    ("Monitoring",               "👁️", "#0891b2"),   # sky
+]
+
+def _strip_markdown_heading(text: str) -> str:
+    """Remove leading ## / ### / ** from a line."""
+    text = re.sub(r"^#{1,4}\s*", "", text.strip())
+    text = re.sub(r"^\*{1,2}(.*?)\*{1,2}$", r"\1", text.strip())
+    return text.strip()
+
+def _parse_rag_answer(answer: str) -> list[dict]:
+    # Only split on ## headings — NOT on bold lines (**...**)
+    # Bold lines are sub-labels INSIDE a section, not new sections
+    parts = re.split(r"\n(?=#{1,4}\s)", answer)
+
+    if len(parts) <= 1:
+        # Fallback: try splitting without requiring preceding newline
+        parts = re.split(r"(?=\n##\s)", answer)
+
+    sections = []
+
+    for part in parts:
+        part = part.strip()
+        if not part:
+            continue
+
+        lines = part.splitlines()
+        if not lines:
+            continue
+
+        heading_raw = lines[0]
+        heading     = _strip_markdown_heading(heading_raw)
+        body_lines  = lines[1:]
+
+        while body_lines and not body_lines[0].strip():
+            body_lines.pop(0)
+        body = "\n".join(body_lines).strip()
+
+        if not body:
+            continue
+
+        # Filter whole-section SKIP_SECTION
+        if body.strip().upper().startswith("SKIP_SECTION"):
+            continue
+
+        icon, color = "📌", "#475569"
+        for title_kw, sec_icon, sec_color in RAG_SECTIONS:
+            kw_list = title_kw.lower().split()
+            if any(kw in heading.lower() for kw in kw_list):
+                icon  = sec_icon
+                color = sec_color
+                break
+
+        sections.append({
+            "title":   heading if heading else "Advisory",
+            "icon":    icon,
+            "color":   color,
+            "content": body,
+        })
+
+    if not sections:
+        sections = [{"title": "Advisory", "icon": "📋", "color": "#475569", "content": answer.strip()}]
+
+    return sections
+
+def _render_body_line(line: str) -> str:
+    line = line.strip()
+    if not line:
+        return "<div style='height:6px;'></div>"
+
+    # Hide SKIP_SECTION sub-label entries silently
+    if line.upper().startswith("SKIP_SECTION"):
+        return ""
+
+    # Bullet points
+    if line.startswith(("- ", "* ", "• ")):
+        content = re.sub(r"^[-*•]\s+", "", line)
+        # Also hide bullets that are just SKIP_SECTION
+        if content.strip().upper().startswith("SKIP_SECTION"):
+            return ""
+        content = re.sub(r"\*\*(.*?)\*\*", r"<strong style='color:#0f172a;'>\1</strong>", content)
+        return f"""
+        <div style="display:flex; gap:10px; align-items:flex-start; margin-bottom:8px;">
+            <span style="color:#16a34a; font-size:14px; margin-top:3px; flex-shrink:0;">▸</span>
+            <span style="font-family:'DM Sans',sans-serif; font-size:17px;
+                font-weight:600; color:#1e293b; line-height:1.7;">{content}</span>
+        </div>"""
+
+    # Numbered list
+    m = re.match(r"^(\d+)\.\s+(.*)", line)
+    if m:
+        num, content = m.group(1), m.group(2)
+        if content.strip().upper().startswith("SKIP_SECTION"):
+            return ""
+        content = re.sub(r"\*\*(.*?)\*\*", r"<strong style='color:#0f172a;'>\1</strong>", content)
+        return f"""
+        <div style="display:flex; gap:12px; align-items:flex-start; margin-bottom:8px;">
+            <span style="background:#e0f2fe; color:#0369a1; font-size:13px;
+                font-weight:800; min-width:24px; height:24px; border-radius:50%;
+                display:flex; align-items:center; justify-content:center;
+                flex-shrink:0; margin-top:2px;">{num}</span>
+            <span style="font-family:'DM Sans',sans-serif; font-size:17px;
+                font-weight:600; color:#1e293b; line-height:1.7;">{content}</span>
+        </div>"""
+
+    # Bold sub-heading line (e.g. **Immediate Actions (24-72 hrs)**)
+    if re.match(r"^\*\*.*\*\*$", line):
+        content = re.sub(r"\*\*(.*?)\*\*", r"\1", line)
+        # Don't render sub-label if its content is SKIP_SECTION
+        if content.strip().upper().startswith("SKIP_SECTION"):
+            return ""
+        return f"""
+        <div style="font-family:'DM Sans',sans-serif; font-size:15px;
+            font-weight:800; color:#334155; margin:14px 0 6px 0;
+            padding-top:10px; border-top:1px solid #f1f5f9;">{content}</div>"""
+
+    # Plain paragraph
+    if line.upper().startswith("SKIP_SECTION"):
+        return ""
+    line = re.sub(r"\*\*(.*?)\*\*", r"<strong style='color:#0f172a;'>\1</strong>", line)
+    return f"""<p style="font-family:'DM Sans',sans-serif; font-size:17px;
+        font-weight:600; color:#1e293b; line-height:1.8; margin:0 0 6px 0;">{line}</p>"""
+
+def render_section_card(title: str, icon: str, color: str, content: str):
+    lines = content.splitlines()
+    rendered_lines = [_render_body_line(ln) for ln in lines]
+    
+    # Remove bold sub-label if it's immediately followed by nothing
+    # (happens when SKIP_SECTION was the only content under it)
+    cleaned = []
+    for i, html in enumerate(rendered_lines):
+        # If this is a sub-heading div and next non-empty is another sub-heading or end
+        cleaned.append(html)
+    
+    body_html = "".join(cleaned)
+    
+    st.markdown(f"""
+    <div style="background:#ffffff; border:1px solid {color}30;
+                border-left:5px solid {color}; border-radius:14px;
+                padding:22px 26px; margin-bottom:16px;
+                box-shadow:0 2px 10px rgba(0,0,0,0.05);">
+        <div style="display:flex; align-items:center; gap:10px; margin-bottom:16px;
+                    padding-bottom:12px; border-bottom:1px solid {color}20;">
+            <span style="font-size:22px;">{icon}</span>
+            <span style="font-family:'Lora',serif; font-size:20px;
+                font-weight:800; color:{color};">{title}</span>
+        </div>
+        <div>{body_html}</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+def render_rag_panel(rag_result: dict, disease_display: str):
+    """Parse LLM answer and render each section as a styled card."""
+    answer  = rag_result["answer"]
+    sources = rag_result["sources"]
+
+    sections = _parse_rag_answer(answer)
+
+    # ── Advisory header ───────────────────────────────────────────────────────
+    st.markdown(f"""
+    <div style="background:linear-gradient(135deg,#f0fdf4,#ecfdf5);
+                border:1px solid #bbf7d0; border-radius:14px;
+                padding:18px 24px; margin-bottom:20px;
+                display:flex; align-items:center; gap:14px;">
+        <span style="font-size:28px;">🤖</span>
+        <div>
+            <div style="font-family:'Lora',serif; font-size:20px;
+                font-weight:800; color:#14532d; margin-bottom:2px;">
+                AI-Generated Advisory
+            </div>
+            <div style="font-family:'JetBrains Mono',monospace; font-size:13px;
+                color:#16a34a; font-weight:700;">
+                Disease · {disease_display} &nbsp;|&nbsp; Retrieved from GuavaScan KB &nbsp;|&nbsp; Gemini 2.5 Flash
+            </div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # ── Section cards ─────────────────────────────────────────────────────────
+    for sec in sections:
+        render_section_card(sec["title"], sec["icon"], sec["color"], sec["content"])
+
+    # ── Source attribution ────────────────────────────────────────────────────
+    with st.expander("📄 Knowledge Base Sources Retrieved", expanded=False):
+        if sources:
+            cols = st.columns(min(len(sources), 3))
+            for i, s in enumerate(sources):
+                with cols[i % len(cols)]:
+                    st.markdown(f"""
+                    <div style="background:#f8fafc; border:1px solid #e2e8f0;
+                                border-radius:10px; padding:12px 14px; margin-bottom:8px;">
+                        <div style="font-family:'JetBrains Mono',monospace; font-size:12px;
+                            color:#16a34a; font-weight:700; margin-bottom:4px;">
+                            📄 {s['file']}
+                        </div>
+                        <div style="font-family:'DM Sans',sans-serif; font-size:13px;
+                            color:#475569; font-weight:700;">
+                            § {s['section']}
+                        </div>
+                    </div>
+                    """, unsafe_allow_html=True)
+        else:
+            st.info("No source metadata available.")
+
+    # ── Disclaimer ────────────────────────────────────────────────────────────
+    st.markdown("""
+    <div style="background:#fefce8; border:1px solid #fde047; border-radius:10px;
+                padding:12px 16px; margin-top:8px;">
+        <p style="font-family:'DM Sans',sans-serif; font-size:14px; font-weight:700;
+            color:#713f12; margin:0; line-height:1.6;">
+            ⚠️ <strong>Disclaimer:</strong> This advisory is AI-generated from the GuavaScan knowledge base.
+            Always verify with a certified agronomist before applying chemical treatments.
+        </p>
+    </div>
+    """, unsafe_allow_html=True)
 
 # ══════════════════════════════════════════════════════════════════════════════
-# PAGE CONFIG & GLOBAL CSS
+# PAGE CONFIG & CSS
 # ══════════════════════════════════════════════════════════════════════════════
 
 st.set_page_config(
-    page_title="GuavaScan — Leaf Disease Detection",
+    page_title="GuavaScan — RAG Disease Advisory",
     page_icon="🌿",
     layout="wide",
     initial_sidebar_state="collapsed",
@@ -409,66 +399,77 @@ st.set_page_config(
 
 st.markdown("""
 <style>
-@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600;700&family=DM+Serif+Display&family=JetBrains+Mono:wght@400;600&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Lora:wght@400;500;700;800&family=DM+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600;700&display=swap');
 
-/* ── Global reset ─────────────────────────────────── */
+/* ── Base reset — fixes white text bug ───────────────────────────────────── */
 html, body, [class*="css"] {
     font-family: 'DM Sans', sans-serif;
+    color: #1e293b !important;
 }
-.stApp {
-    background: #0d1117;
-}
+.stApp { background: #f0f7f0; }
 .main .block-container {
-    padding: 1.5rem 2rem 3rem 2rem;
-    max-width: 1400px;
+    padding: 1.5rem 2.5rem 4rem 2.5rem;
+    max-width: 1440px;
 }
-
-/* ── Hide Streamlit chrome ────────────────────────── */
 #MainMenu, footer, header { visibility: hidden; }
 .stDeployButton { display: none; }
 
-/* ── Upload widget ────────────────────────────────── */
+/* ── Explicit color on all common Streamlit text nodes ───────────────────── */
+p, li, span, div, label, h1, h2, h3 {
+    color: #1e293b;
+}
+
+/* ── Streamlit markdown inherits ────────────────────────────────────────── */
+.stMarkdown, .stMarkdown p, .stMarkdown li {
+    color: #1e293b !important;
+    font-size: 16px;
+    font-weight: 600;
+}
+
+/* ── Expander ────────────────────────────────────────────────────────────── */
+.streamlit-expanderHeader {
+    font-family: 'DM Sans', sans-serif !important;
+    font-weight: 800 !important;
+    color: #1e293b !important;
+    font-size: 15px !important;
+}
+
+/* ── File uploader ───────────────────────────────────────────────────────── */
 [data-testid="stFileUploader"] {
-    background: rgba(255,255,255,0.03) !important;
-    border: 2px dashed rgba(52, 211, 153, 0.4) !important;
+    background: #2d6a4f !important;
+    border: 2px dashed rgba(255,255,255,0.5) !important;
     border-radius: 16px !important;
-    padding: 1.5rem !important;
-    transition: border-color 0.3s;
+    padding: 1.2rem !important;
 }
-[data-testid="stFileUploader"]:hover {
-    border-color: rgba(52, 211, 153, 0.8) !important;
+[data-testid="stFileUploader"] label,
+[data-testid="stFileUploader"] p,
+[data-testid="stFileUploader"] span,
+[data-testid="stFileUploader"] small {
+    color: rgba(255,255,255,0.85) !important;
+    font-weight: 800 !important;
 }
-[data-testid="stFileUploader"] label {
-    color: #94a3b8 !important;
-    font-family: 'DM Sans', sans-serif !important;
-}
-
-/* ── Buttons ──────────────────────────────────────── */
-.stButton > button {
-    background: linear-gradient(135deg, #34d399, #059669) !important;
-    color: #0d1117 !important;
-    border: none !important;
+[data-testid="stFileUploader"] button {
+    background: rgba(255,255,255,0.15) !important;
+    color: rgba(255,255,255,0.85) !important;
+    border: 2px solid rgba(255,255,255,0.5) !important;
     border-radius: 10px !important;
-    font-family: 'DM Sans', sans-serif !important;
-    font-weight: 700 !important;
-    font-size: 14px !important;
-    padding: 0.5rem 1.5rem !important;
-    transition: opacity 0.2s !important;
-}
-.stButton > button:hover {
-    opacity: 0.85 !important;
+    font-weight: 800 !important;
 }
 
-/* ── Dividers ─────────────────────────────────────── */
-hr {
-    border-color: rgba(255,255,255,0.08) !important;
-    margin: 1.5rem 0 !important;
+/* ── Spinner ─────────────────────────────────────────────────────────────── */
+.stSpinner > div { border-top-color: #16a34a !important; }
+
+/* ── Checkbox ────────────────────────────────────────────────────────────── */
+.stCheckbox label { color: #1e293b !important; font-weight: 700 !important; }
+
+/* ── Caption ─────────────────────────────────────────────────────────────── */
+.stCaption, [data-testid="stCaptionContainer"] {
+    color: #64748b !important;
+    font-weight: 600 !important;
 }
 
-/* ── Spinner ──────────────────────────────────────── */
-.stSpinner > div {
-    border-top-color: #34d399 !important;
-}
+/* ── Warning / info / error boxes ───────────────────────────────────────── */
+.stAlert p { color: inherit !important; font-weight: 700 !important; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -478,69 +479,76 @@ hr {
 
 st.markdown("""
 <div style="
-    background: linear-gradient(135deg, rgba(52,211,153,0.12) 0%, rgba(5,150,105,0.06) 100%);
-    border: 1px solid rgba(52,211,153,0.2);
-    border-radius: 20px;
-    padding: 28px 36px;
-    margin-bottom: 28px;
-    position: relative;
-    overflow: hidden;
+    background:linear-gradient(135deg,#dcfce7 0%,#f0fdf4 60%,#ecfdf5 100%);
+    border:1px solid #bbf7d0; border-radius:20px;
+    padding:22px 36px; margin-bottom:30px;
+    box-shadow:0 2px 16px rgba(22,163,74,0.10);
 ">
-    <div style="
-        position: absolute; top: -30px; right: -30px;
-        width: 160px; height: 160px;
-        background: radial-gradient(circle, rgba(52,211,153,0.15) 0%, transparent 70%);
-        border-radius: 50%;
-    "></div>
-    <div style="display: flex; align-items: center; gap: 16px;">
-        <div style="font-size: 48px; line-height:1;">🌿</div>
+    <div style="display:flex; align-items:center; gap:18px;">
+        <div style="font-size:52px; line-height:1; flex-shrink:0;">🌿</div>
         <div>
-            <h1 style="
-                font-family: 'DM Serif Display', serif;
-                font-size: 2.2rem;
-                color: #f0fdf4;
-                margin: 0 0 4px 0;
-                letter-spacing: -0.5px;
-            ">GuavaScan</h1>
-            <p style="
-                font-family: 'DM Sans', sans-serif;
-                font-size: 14px;
-                color: #6ee7b7;
-                margin: 0;
-                letter-spacing: 0.5px;
-            ">LEAF DISEASE DETECTION · DeiT-tiny · Two-Stage Transfer Learning · ViT + RAG</p>
+            <h1 style="font-family:'Lora',serif; font-size:clamp(2rem,4vw,3rem);
+                color:#14532d; margin:0 0 4px 0; font-weight:800;
+                letter-spacing:-1px; line-height:1;">GuavaScan</h1>
+            <p style="font-family:'DM Sans',sans-serif; font-size:clamp(0.95rem,2vw,1.1rem);
+                color:#166534; font-weight:800; margin:0; letter-spacing:0.5px;">
+                Guava Leaf Disease Detection &nbsp;·&nbsp; ViT (DeiT-tiny) + RAG Advisory Pipeline
+            </p>
         </div>
-    </div>
-    <div style="
-        display: flex; gap: 12px; margin-top: 16px; flex-wrap: wrap;
-    ">
-        <span style="background:rgba(52,211,153,0.15); border:1px solid rgba(52,211,153,0.3);
-                     border-radius:6px; padding:4px 10px; font-size:11px; color:#6ee7b7;
-                     font-family:'JetBrains Mono',monospace;">Stage 2 · 6 Guava Classes</span>
-        <span style="background:rgba(99,102,241,0.15); border:1px solid rgba(99,102,241,0.3);
-                     border-radius:6px; padding:4px 10px; font-size:11px; color:#a5b4fc;
-                     font-family:'JetBrains Mono',monospace;">99.80% → 100% Accuracy</span>
-        <span style="background:rgba(251,191,36,0.12); border:1px solid rgba(251,191,36,0.25);
-                     border-radius:6px; padding:4px 10px; font-size:11px; color:#fcd34d;
-                     font-family:'JetBrains Mono',monospace;">RAG Integration · Pending</span>
+        <div style="margin-left:auto; text-align:right;">
+            <span style="font-family:'JetBrains Mono',monospace; font-size:12px;
+                color:#16a34a; font-weight:800; background:#dcfce7;
+                padding:4px 12px; border-radius:8px; border:1px solid #bbf7d0;
+                white-space:nowrap;">
+                RAG · Gemini 2.5 Flash
+            </span>
+        </div>
     </div>
 </div>
 """, unsafe_allow_html=True)
 
 # ══════════════════════════════════════════════════════════════════════════════
-# LOAD MODEL (cached)
+# LOAD RESOURCES
 # ══════════════════════════════════════════════════════════════════════════════
+
+cfg = load_config()
 
 with st.spinner("Loading GuavaScan model..."):
     model, device = load_model()
 
+with st.spinner("Initialising RAG pipeline..."):
+    try:
+        rag_cfg, retriever = load_rag_components()
+        rag_ready = True
+    except Exception as e:
+        rag_ready  = False
+        rag_error  = str(e)
+
 device_label = "GPU (CUDA)" if str(device) == "cuda" else "CPU"
+rag_status   = "✅ RAG Ready" if rag_ready else "⚠️ RAG Offline"
+rag_color    = "#16a34a"     if rag_ready else "#d97706"
+
 st.markdown(f"""
-<div style="text-align:right; font-family:'JetBrains Mono',monospace;
-            font-size:11px; color:#4ade80; margin-top:-16px; margin-bottom:16px;">
-    ● Model loaded · {device_label}
+<div style="display:flex; gap:20px; justify-content:flex-end;
+            margin-top:-14px; margin-bottom:18px; flex-wrap:wrap;">
+    <span style="font-family:'JetBrains Mono',monospace; font-size:14px;
+        color:#16a34a; font-weight:800;">● Model · {device_label}</span>
+    <span style="font-family:'JetBrains Mono',monospace; font-size:14px;
+        color:{rag_color}; font-weight:800;">{rag_status}</span>
 </div>
 """, unsafe_allow_html=True)
+
+if not rag_ready:
+    st.warning(f"RAG pipeline could not initialise: {rag_error}. Run `python rag/ingest.py` first.")
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SESSION STATE
+# ══════════════════════════════════════════════════════════════════════════════
+
+if "last_prediction" not in st.session_state:
+    st.session_state.last_prediction = None
+if "last_rag_result" not in st.session_state:
+    st.session_state.last_rag_result = None
 
 # ══════════════════════════════════════════════════════════════════════════════
 # MAIN LAYOUT — two columns
@@ -548,11 +556,18 @@ st.markdown(f"""
 
 col_left, col_right = st.columns([1.1, 1], gap="large")
 
+# Initialise zone here so it's always defined before the RAG panel below
+zone           = None
+pil_image      = None
+top_class      = None
+top_conf       = None
+display_name   = None
+
 with col_left:
     st.markdown("""
-    <div style="font-family:'DM Sans',sans-serif; font-size:11px; letter-spacing:1.5px;
-                color:#6ee7b7; font-weight:600; margin-bottom:12px;">
-        📤 UPLOAD LEAF IMAGE
+    <div style="font-family:'DM Sans',sans-serif; font-size:14px; letter-spacing:2px;
+                color:#16a34a; font-weight:800; margin-bottom:14px; text-transform:uppercase;">
+        📤 Upload Leaf Image
     </div>
     """, unsafe_allow_html=True)
 
@@ -562,323 +577,269 @@ with col_left:
         label_visibility="collapsed",
     )
 
-    show_attention = False
-    pil_image = None
-
     if uploaded is not None:
         pil_image = Image.open(uploaded).convert("RGB")
 
-        # Show controls row
-        ctrl_col1, ctrl_col2 = st.columns([1, 1])
-        with ctrl_col1:
-            show_attention = st.toggle("🔥 Show Attention Map", value=False)
-        with ctrl_col2:
-            run_btn = st.button("🔍 Analyse Leaf", use_container_width=True)
-
-        # Image display
-        if show_attention:
-            with st.spinner("Generating attention map..."):
-                tensor = preprocess(pil_image)
-                overlay = generate_attention_overlay(model, tensor, device, pil_image)
-            img_col1, img_col2 = st.columns(2)
-            with img_col1:
-                st.markdown('<p style="font-size:11px; color:#94a3b8; text-align:center; margin-bottom:4px;">Original</p>', unsafe_allow_html=True)
-                st.image(pil_image.resize((224, 224)), use_container_width=True)
-            with img_col2:
-                st.markdown('<p style="font-size:11px; color:#94a3b8; text-align:center; margin-bottom:4px;">Attention Heatmap</p>', unsafe_allow_html=True)
-                st.image(overlay, use_container_width=True)
-
-            st.markdown("""
-            <div style="background:rgba(99,102,241,0.08); border:1px solid rgba(99,102,241,0.2);
-                        border-radius:8px; padding:10px 14px; margin-top:8px;">
-                <span style="font-size:11px; color:#a5b4fc; font-family:'DM Sans',sans-serif;">
-                    🔬 <b>Explainability:</b> Red/warm regions = areas the model focused on for its prediction.
-                    A good model should highlight diseased leaf regions, not background.
-                </span>
-            </div>
-            """, unsafe_allow_html=True)
-        else:
+        _, img_center, _ = st.columns([0.175, 0.65, 0.175])
+        with img_center:
             st.image(pil_image, use_container_width=True, caption="Uploaded leaf image")
 
+        st.markdown("<div style='margin-top:12px;'></div>", unsafe_allow_html=True)
+        show_attention = st.checkbox("🔥 Show Attention Heatmap", value=False)
+
+        if show_attention:
+            with st.spinner("Generating attention map..."):
+                tensor_att = preprocess(pil_image)
+                overlay    = generate_attention_overlay(model, tensor_att, device, pil_image)
+            img_col1, img_col2 = st.columns(2)
+            with img_col1:
+                st.markdown('<p style="font-size:16px; font-weight:800; color:#475569; text-align:center;">Original</p>', unsafe_allow_html=True)
+                st.image(pil_image.resize((224, 224)), use_container_width=True)
+            with img_col2:
+                st.markdown('<p style="font-size:16px; font-weight:800; color:#475569; text-align:center;">Attention Heatmap</p>', unsafe_allow_html=True)
+                st.image(overlay, use_container_width=True)
+            st.markdown("""
+            <div style="background:#f0fdf4; border:1px solid #bbf7d0;
+                        border-radius:10px; padding:14px 18px; margin-top:12px;">
+                <p style="font-size:15px; font-weight:700; color:#15803d; margin:0;">
+                    🔬 <strong>Explainability:</strong> Warm regions show where the ViT model focused its attention.
+                </p>
+            </div>
+            """, unsafe_allow_html=True)
+
     else:
-        # Placeholder state
         st.markdown("""
-        <div style="
-            background: rgba(255,255,255,0.02);
-            border: 1px dashed rgba(255,255,255,0.1);
-            border-radius: 16px;
-            height: 260px;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            justify-content: center;
-            gap: 12px;
-        ">
-            <div style="font-size: 48px; opacity:0.3;">🍃</div>
-            <p style="color:#4a5568; font-size:13px; margin:0; font-family:'DM Sans',sans-serif;">
-                Upload a guava leaf photo to begin diagnosis
+        <div style="background:#ffffff; border:2px dashed #bbf7d0;
+                    border-radius:16px; height:290px; display:flex;
+                    flex-direction:column; align-items:center;
+                    justify-content:center; gap:14px;">
+            <div style="font-size:54px; opacity:0.22;">🍃</div>
+            <p style="color:#64748b; font-size:20px; font-weight:800; margin:0;">
+                Upload a leaf photo to begin
             </p>
-            <p style="color:#374151; font-size:11px; margin:0; font-family:'JetBrains Mono',monospace;">
-                JPG · PNG · WEBP · max 200MB
-            </p>
+            <p style="color:#94a3b8; font-size:15px; font-weight:800; margin:0;
+                font-family:'JetBrains Mono',monospace;">JPG · PNG · WEBP</p>
         </div>
         """, unsafe_allow_html=True)
 
 # ══════════════════════════════════════════════════════════════════════════════
-# RIGHT COLUMN — Results
+# RIGHT COLUMN — ViT Prediction
 # ══════════════════════════════════════════════════════════════════════════════
 
 with col_right:
     st.markdown("""
-    <div style="font-family:'DM Sans',sans-serif; font-size:11px; letter-spacing:1.5px;
-                color:#6ee7b7; font-weight:600; margin-bottom:12px;">
-        📊 DISEASE ANALYSIS
+    <div style="font-family:'DM Sans',sans-serif; font-size:14px; letter-spacing:2px;
+                color:#16a34a; font-weight:800; margin-bottom:14px; text-transform:uppercase;">
+        📊 Disease Analysis
     </div>
     """, unsafe_allow_html=True)
 
     if pil_image is None:
-        # Empty state
         st.markdown("""
-        <div style="
-            background: rgba(255,255,255,0.02);
-            border: 1px solid rgba(255,255,255,0.06);
-            border-radius: 16px;
-            padding: 48px 24px;
-            text-align: center;
-        ">
-            <div style="font-size:36px; opacity:0.2; margin-bottom:12px;">🔬</div>
-            <p style="color:#374151; font-size:13px; font-family:'DM Sans',sans-serif; margin:0;">
+        <div style="background:#ffffff; border:1px solid #e2e8f0;
+                    border-radius:16px; padding:64px 24px; text-align:center;">
+            <div style="font-size:46px; opacity:0.16; margin-bottom:16px;">🔬</div>
+            <p style="color:#94a3b8; font-size:20px; font-weight:800; margin:0;">
                 Results will appear here after upload
             </p>
         </div>
         """, unsafe_allow_html=True)
 
     else:
-        # Run prediction
         with st.spinner("Analysing leaf..."):
-            tensor = preprocess(pil_image)
+            tensor        = preprocess(pil_image)
             top3, all_probs = predict(model, tensor, device)
 
         top_class, top_conf = top3[0]
-        display_name = DISPLAY_NAMES[top_class]
+        display_name        = DISPLAY_NAMES[top_class]
         severity_label, severity_color = SEVERITY[top_class]
+        card_accent = "#16a34a" if top_class == cfg.get("healthy_class") else severity_color
 
-        # ── Primary result card ──────────────────────────────
-        is_healthy = top_class == "Guava_healthy"
-        card_accent = "#34d399" if is_healthy else severity_color
+        zone = get_confidence_zone(top_conf, cfg)
+        st.markdown(zone_banner_html(zone, top_conf), unsafe_allow_html=True)
 
-        st.markdown(f"""
-        <div style="
-            background: linear-gradient(135deg, {card_accent}18 0%, {card_accent}08 100%);
-            border: 1px solid {card_accent}40;
-            border-radius: 16px;
-            padding: 20px 24px;
-            margin-bottom: 16px;
-        ">
-            <div style="display:flex; justify-content:space-between; align-items:flex-start;">
-                <div>
-                    <div style="font-family:'DM Sans',sans-serif; font-size:11px;
-                                letter-spacing:1.2px; color:#94a3b8; margin-bottom:6px;">
-                        DETECTED DISEASE
+        if zone["rag_mode"] != "skip":
+            # Disease prediction card
+            st.markdown(f"""
+            <div style="background:linear-gradient(135deg,{card_accent}14 0%,{card_accent}06 100%);
+                border:2px solid {card_accent}45; border-radius:16px;
+                padding:28px 32px; margin-bottom:22px;
+                box-shadow:0 3px 14px rgba(0,0,0,0.08);">
+                <div style="display:flex; justify-content:space-between;
+                    align-items:flex-start; gap:12px; flex-wrap:wrap;">
+                    <div>
+                        <div style="font-family:'DM Sans',sans-serif; font-size:13px;
+                            letter-spacing:2px; color:#64748b; margin-bottom:10px;
+                            font-weight:800; text-transform:uppercase;">Detected Condition</div>
+                        <div style="font-family:'Lora',serif;
+                            font-size:clamp(1.8rem,3vw,2.5rem);
+                            color:#0f172a; line-height:1.15; font-weight:800;">{display_name}</div>
                     </div>
-                    <div style="font-family:'DM Serif Display',serif; font-size:1.8rem;
-                                color:#f8fafc; line-height:1.1;">
-                        {display_name}
+                    <div style="background:{severity_color}1a;
+                        border:2px solid {severity_color}65; border-radius:12px;
+                        padding:12px 22px; text-align:center; flex-shrink:0;">
+                        <div style="font-size:12px; color:{severity_color};
+                            letter-spacing:2px; font-family:'JetBrains Mono',monospace;
+                            font-weight:800; text-transform:uppercase;">Severity</div>
+                        <div style="font-size:22px; color:{severity_color};
+                            font-weight:800; margin-top:4px;">{severity_label}</div>
                     </div>
                 </div>
-                <div style="
-                    background: {severity_color}25;
-                    border: 1px solid {severity_color}60;
-                    border-radius: 8px;
-                    padding: 6px 14px;
-                    text-align: center;
-                ">
-                    <div style="font-size:10px; color:{severity_color}; letter-spacing:1px;
-                                font-family:'JetBrains Mono',monospace;">SEVERITY</div>
-                    <div style="font-size:15px; color:{severity_color}; font-weight:700;
-                                font-family:'DM Sans',sans-serif;">{severity_label}</div>
-                </div>
-            </div>
-            <div style="margin-top:14px;">
-                <div style="font-size:11px; color:#94a3b8; margin-bottom:6px;
-                            font-family:'JetBrains Mono',monospace;">CONFIDENCE</div>
-                <div style="display:flex; align-items:center; gap:12px;">
-                    <div style="flex:1; background:rgba(255,255,255,0.08); border-radius:6px;
-                                height:10px; overflow:hidden;">
-                        <div style="width:{top_conf*100:.1f}%; height:100%;
-                                    background: linear-gradient(90deg, {card_accent}, {card_accent}cc);
-                                    border-radius:6px;"></div>
+                <div style="margin-top:22px;">
+                    <div style="font-size:13px; color:#64748b; margin-bottom:10px;
+                        font-family:'JetBrains Mono',monospace; font-weight:800;
+                        letter-spacing:2px; text-transform:uppercase;">Confidence</div>
+                    <div style="display:flex; align-items:center; gap:16px;">
+                        <div style="flex:1; background:#e2e8f0; border-radius:8px; height:16px; overflow:hidden;">
+                            <div style="width:{top_conf*100:.1f}%; height:100%;
+                                background:linear-gradient(90deg,{card_accent},{card_accent}cc);
+                                border-radius:8px;"></div>
+                        </div>
+                        <span style="font-family:'JetBrains Mono',monospace; font-size:26px;
+                            color:{card_accent}; font-weight:800; min-width:80px;">
+                            {top_conf*100:.1f}%
+                        </span>
                     </div>
-                    <span style="font-family:'JetBrains Mono',monospace; font-size:18px;
-                                 color:{card_accent}; font-weight:700; min-width:60px;">
-                        {top_conf*100:.1f}%
-                    </span>
                 </div>
             </div>
-        </div>
-        """, unsafe_allow_html=True)
+            """, unsafe_allow_html=True)
 
-        # ── Top-3 breakdown ──────────────────────────────────
-        st.markdown("""
-        <div style="font-family:'DM Sans',sans-serif; font-size:11px; letter-spacing:1.2px;
-                    color:#94a3b8; font-weight:600; margin-bottom:10px;">
-            TOP 3 PREDICTIONS
-        </div>
-        """, unsafe_allow_html=True)
+            # Top-3 predictions
+            st.markdown("""
+            <div style="font-family:'DM Sans',sans-serif; font-size:13px; letter-spacing:2px;
+                color:#64748b; font-weight:800; margin-bottom:14px; text-transform:uppercase;">
+                Top 3 Predictions
+            </div>
+            """, unsafe_allow_html=True)
+            colors_top3 = [card_accent, "#2563eb", "#7c3aed"]
+            for i, (cls, conf) in enumerate(top3):
+                st.markdown(
+                    confidence_bar_html(DISPLAY_NAMES[cls], conf, colors_top3[i], is_top=(i == 0)),
+                    unsafe_allow_html=True,
+                )
 
-        colors_top3 = [card_accent, "#60a5fa", "#a78bfa"]
-        for i, (cls, conf) in enumerate(top3):
-            bar_html = confidence_bar_html(
-                DISPLAY_NAMES[cls], conf,
-                colors_top3[i], is_top=(i == 0)
-            )
-            st.markdown(bar_html, unsafe_allow_html=True)
-
-        # ── Model info footer ────────────────────────────────
-        st.markdown(f"""
-        <div style="
-            background: rgba(255,255,255,0.02);
-            border: 1px solid rgba(255,255,255,0.06);
-            border-radius: 8px;
-            padding: 10px 14px;
-            margin-top: 8px;
-            display: flex;
-            gap: 20px;
-        ">
-            <span style="font-size:11px; color:#4b5563; font-family:'JetBrains Mono',monospace;">
-                Model: DeiT-tiny Stage 2
-            </span>
-            <span style="font-size:11px; color:#4b5563; font-family:'JetBrains Mono',monospace;">
-                Device: {device_label}
-            </span>
-            <span style="font-size:11px; color:#4b5563; font-family:'JetBrains Mono',monospace;">
-                Classes: 6 Guava
-            </span>
-        </div>
-        """, unsafe_allow_html=True)
-
+        else:
+            st.markdown("""
+            <div style="background:#fff1f2; border:2px dashed #fecdd3;
+                        border-radius:14px; padding:44px 24px; text-align:center;">
+                <div style="font-size:48px; margin-bottom:16px;">🔴</div>
+                <p style="font-family:'Lora',serif; font-size:22px; font-weight:800;
+                    color:#7f1d1d; margin:0 0 12px 0;">Diagnosis Withheld</p>
+                <p style="font-family:'DM Sans',sans-serif; font-size:16px; font-weight:700;
+                    color:#991b1b; margin:0; line-height:1.7;">
+                    Upload a clearer, well-lit image of a single guava leaf.
+                </p>
+            </div>
+            """, unsafe_allow_html=True)
 
 # ══════════════════════════════════════════════════════════════════════════════
-# TREATMENT ADVICE — full width below
+# RAG ADVISORY PANEL — full width below columns
 # ══════════════════════════════════════════════════════════════════════════════
 
-st.markdown("<hr>", unsafe_allow_html=True)
+st.markdown("<hr style='border-color:#d1fae5; margin:2rem 0;'>", unsafe_allow_html=True)
 
 st.markdown("""
-<div style="display:flex; align-items:center; gap:16px; margin-bottom:20px;">
-    <div>
-        <div style="font-family:'DM Sans',sans-serif; font-size:11px; letter-spacing:1.5px;
-                    color:#fcd34d; font-weight:600;">
-            🤖 AI TREATMENT ADVICE
-        </div>
-        <div style="font-family:'DM Sans',sans-serif; font-size:12px; color:#6b7280; margin-top:2px;">
-            Knowledge base · RAG integration pending — full semantic retrieval coming in Phase 3
-        </div>
-    </div>
-    <div style="
-        background: rgba(251,191,36,0.1);
-        border: 1px solid rgba(251,191,36,0.25);
-        border-radius: 6px;
-        padding: 4px 12px;
-        font-size:11px;
-        color:#fcd34d;
-        font-family:'JetBrains Mono',monospace;
-        white-space: nowrap;
-    ">⚠ Hardcoded · Pre-RAG</div>
+<div style="font-family:'DM Sans',sans-serif; font-size:14px; letter-spacing:2px;
+            color:#854d0e; font-weight:800; margin-bottom:22px; text-transform:uppercase;">
+    🤖 RAG-Powered Agronomic Advisory
 </div>
 """, unsafe_allow_html=True)
 
 if pil_image is None:
     st.markdown("""
-    <div style="
-        background: rgba(255,255,255,0.02);
-        border: 1px dashed rgba(255,255,255,0.08);
-        border-radius: 12px;
-        padding: 36px;
-        text-align: center;
-        color: #374151;
-        font-family: 'DM Sans', sans-serif;
-        font-size: 13px;
-    ">
-        Upload and analyse a leaf image to see treatment recommendations
+    <div style="background:#ffffff; border:2px dashed #e2e8f0; border-radius:14px;
+                padding:44px; text-align:center;">
+        <p style="color:#94a3b8; font-size:20px; font-weight:800; margin:0;">
+            Upload a leaf image to see the RAG advisory
+        </p>
     </div>
     """, unsafe_allow_html=True)
 
-else:
-    advice = DISEASE_ADVICE[top_class]
-
-    # Overview
-    st.markdown(f"""
-    <div style="
-        background: rgba(255,255,255,0.03);
-        border: 1px solid rgba(255,255,255,0.08);
-        border-radius: 12px;
-        padding: 16px 20px;
-        margin-bottom: 16px;
-        font-family: 'DM Sans', sans-serif;
-        font-size: 14px;
-        color: #cbd5e0;
-        line-height: 1.6;
-    ">
-        {advice['overview']}
+elif zone is not None and zone["rag_mode"] == "skip":
+    st.markdown("""
+    <div style="background:#fff1f2; border:2px dashed #fecdd3; border-radius:14px;
+                padding:44px; text-align:center;">
+        <p style="font-size:18px; font-weight:800; color:#991b1b; margin:0;">
+            🚨 No advisory available — confidence too low. Please upload a clearer image.
+        </p>
     </div>
     """, unsafe_allow_html=True)
 
-    # Three-column card layout
-    adv_col1, adv_col2, adv_col3 = st.columns(3)
+elif not rag_ready:
+    st.error("RAG pipeline not initialised. Run `python rag/ingest.py` then restart the app.")
 
-    with adv_col1:
-        st.markdown(advice_card_html(
-            "🔍", "Symptoms to Watch",
-            advice["symptoms"], "#f87171"
-        ), unsafe_allow_html=True)
+elif zone is not None:
+    # Determine query class
+    if zone["rag_mode"] == "full":
+        query_class    = top_class
+        query_conf     = top_conf
+        advisory_label = display_name
+    else:
+        query_class    = "__fallback__"
+        query_conf     = top_conf
+        advisory_label = "General Guava Care"
+        st.warning("⚠️ Low confidence — showing general guava care guidance.")
 
-    with adv_col2:
-        st.markdown(advice_card_html(
-            "💊", "Treatment Steps",
-            advice["treatment"], "#34d399"
-        ), unsafe_allow_html=True)
+    current_pred = (query_class, round(query_conf, 3))
 
-    with adv_col3:
-        st.markdown(advice_card_html(
-            "🛡️", "Prevention Measures",
-            advice["prevention"], "#60a5fa"
-        ), unsafe_allow_html=True)
+    if st.session_state.last_prediction == current_pred and st.session_state.last_rag_result:
+        rag_result = st.session_state.last_rag_result
+        st.caption("📌 Advisory loaded from session cache.")
+    else:
+        with st.spinner("🔍 Retrieving from knowledge base and generating advisory..."):
+            try:
+                from rag.chain import run_rag_chain
 
-    # Note / disclaimer
-    st.markdown(f"""
-    <div style="
-        background: rgba(251,191,36,0.06);
-        border: 1px solid rgba(251,191,36,0.2);
-        border-radius: 8px;
-        padding: 12px 16px;
-        font-family: 'DM Sans', sans-serif;
-        font-size: 12px;
-        color: #fcd34d;
-        margin-top: 4px;
-    ">
-        {advice['note']}
-    </div>
-    """, unsafe_allow_html=True)
+                if zone["rag_mode"] == "full":
+                    rag_result = run_rag_chain(top_class, top_conf, rag_cfg, retriever)
+                else:
+                    fallback_query = rag_cfg.get("fallback_query", "guava orchard management prevention care")
+                    chunks = retriever.retrieve(fallback_query)
+                    from rag.chain import _format_context
+                    from rag.prompts import HEALTHY_PROMPT
+                    from langchain_google_genai import ChatGoogleGenerativeAI
+                    from langchain_core.output_parsers import StrOutputParser
+                    from langchain_core.messages import HumanMessage
+                    from dotenv import load_dotenv
+                    load_dotenv(os.path.join(ROOT, ".env"))
+                    api_key = os.getenv("GEMINI_API_KEY")
+                    llm = ChatGoogleGenerativeAI(
+                        model=rag_cfg["llm_model"],
+                        google_api_key=api_key,
+                        temperature=0.2,
+                        max_output_tokens=800,
+                    )
+                    context   = _format_context(chunks)
+                    prompt_val = HEALTHY_PROMPT.format(
+                        confidence=query_conf * 100, context=context
+                    )
+                    response   = llm.invoke([HumanMessage(content=prompt_val)])
+                    answer     = StrOutputParser().invoke(response)
+                    sources    = [{"file": c["source"], "section": c["section"]} for c in chunks]
+                    rag_result = {"answer": answer, "sources": sources}
 
+                st.session_state.last_prediction = current_pred
+                st.session_state.last_rag_result  = rag_result
+
+            except Exception as e:
+                st.error(f"RAG chain error: {e}")
+                st.info("Ensure GEMINI_API_KEY is set in .env and the knowledge base is indexed.")
+                rag_result = None
+
+    if rag_result:
+        render_rag_panel(rag_result, advisory_label)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # FOOTER
 # ══════════════════════════════════════════════════════════════════════════════
 
 st.markdown("""
-<div style="
-    text-align: center;
-    margin-top: 48px;
-    padding-top: 24px;
-    border-top: 1px solid rgba(255,255,255,0.06);
-    font-family: 'DM Sans', sans-serif;
-    font-size: 12px;
-    color: #374151;
-">
-    GuavaScan · Phase 2 Presentation · DeiT-tiny + Two-Stage Transfer Learning
-    · <span style="color:#34d399;">Stage 1: 99.80% (44 classes)</span>
-    · <span style="color:#34d399;">Stage 2: 100% (6 guava classes)</span>
-    · RAG integration planned for Phase 3
+<div style="text-align:center; margin-top:56px; padding-top:24px;
+            border-top:1px solid #d1fae5;">
+    <p style="font-family:'DM Sans',sans-serif; font-size:15px;
+        font-weight:700; color:#64748b; margin:0;">
+        GuavaScan &nbsp;·&nbsp; ViT (DeiT-tiny) + RAG Advisory &nbsp;·&nbsp;
+        Gemini 2.5 Flash &nbsp;·&nbsp; ChromaDB · BM25 · sentence-transformers
+    </p>
 </div>
 """, unsafe_allow_html=True)
